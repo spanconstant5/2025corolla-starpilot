@@ -1,6 +1,7 @@
 """TSS3 request construction and EPS signer transport helpers."""
 from collections import deque
 from dataclasses import dataclass
+import json
 from math import isfinite
 
 from opendbc.car.can_definitions import CanData
@@ -186,6 +187,46 @@ class ToyotaTss3RequestTransport:
     self.last_publication_ns = 0
     self.authority_failed = False
     self.last_failure_reason = ""
+    self.session_open = False
+    self._reset_diagnostics()
+
+  def _reset_diagnostics(self) -> None:
+    self.requests_queued = 0
+    self.responses_valid = 0
+    self.responses_failed = 0
+    self.responses_unmatched = 0
+    self.requests_superseded = 0
+    self.publications_sent = 0
+    self.publications_accepted = 0
+    self.publications_rejected = 0
+    self.max_pending_requests = 0
+    self.last_response_latency_ms: float | None = None
+    self.max_response_latency_ms: float | None = None
+
+  def diagnostic_snapshot(self) -> dict[str, object]:
+    """Small route-log-safe summary for post-drive signer validation."""
+    return {
+      "carrier": self.oracle_profile.carrier,
+      "request_bus": self.oracle_profile.request_bus,
+      "response_bus": self.oracle_profile.response_bus,
+      "admin_bus": self.oracle_profile.admin_bus,
+      "requests_queued": self.requests_queued,
+      "responses_valid": self.responses_valid,
+      "responses_failed": self.responses_failed,
+      "responses_unmatched": self.responses_unmatched,
+      "requests_superseded": self.requests_superseded,
+      "publications_sent": self.publications_sent,
+      "publications_accepted": self.publications_accepted,
+      "publications_rejected": self.publications_rejected,
+      "max_pending_requests": self.max_pending_requests,
+      "last_response_latency_ms": self.last_response_latency_ms,
+      "max_response_latency_ms": self.max_response_latency_ms,
+      "authority_failed": self.authority_failed,
+      "last_failure_reason": self.last_failure_reason,
+    }
+
+  def _log_diagnostics(self, event: str) -> None:
+    carlog.info(f"Toyota TSS3 request plane {event}: {json.dumps(self.diagnostic_snapshot(), sort_keys=True)}")
 
   def authority_unavailable(self) -> bool:
     return self.control_enabled and self.authority_failed
@@ -219,6 +260,9 @@ class ToyotaTss3RequestTransport:
     self.last_publication_ns = 0
     self.control_started_ns = 0
     self._invalidate_actuation()
+    if self.session_open:
+      self._log_diagnostics("release")
+      self.session_open = False
 
   def _authority_failure(self, reason: str) -> None:
     if self.authority_failed:
@@ -241,9 +285,13 @@ class ToyotaTss3RequestTransport:
         self.arm_pending = False
         self.arm_host_frame = None
         self.last_publication_ns = now_ns
+        self.publications_accepted += 1
+        self._log_diagnostics("host_08a_active")
       elif self.active:
         self.last_publication_ns = now_ns
+        self.publications_accepted += 1
     elif src == DOWNSTREAM_BUS + PANDA_REJECTED_OFFSET:
+      self.publications_rejected += 1
       if self.arm_pending and data == self.arm_host_frame:
         self._authority_failure("handoff_host_frame_rejected")
       elif self.active:
@@ -258,9 +306,12 @@ class ToyotaTss3RequestTransport:
 
     request = self.requests_by_sequence.get(seq)
     if request is None or request.control_epoch != self.control_epoch:
+      self.responses_unmatched += 1
       return
     if now_ns - request.generation_started_ns > ORACLE_PUBLICATION_DEADLINE_NS:
-      request.superseded = True
+      if not request.superseded:
+        request.superseded = True
+        self.requests_superseded += 1
       return
 
     # The resident drains requests serially. Seeing a later response proves it
@@ -271,13 +322,22 @@ class ToyotaTss3RequestTransport:
       if older is request:
         break
       if older.trailer is None:
-        older.superseded = True
+        if not older.superseded:
+          older.superseded = True
+          self.requests_superseded += 1
 
     if status != 0:
       request.failed = True
+      self.responses_failed += 1
       carlog.warning(f"Toyota TSS3 request plane signer status {status}")
     else:
       request.trailer = data[4:8]
+      latency_ms = round((now_ns - request.generation_started_ns) / 1_000_000, 3)
+      self.last_response_latency_ms = latency_ms
+      self.max_response_latency_ms = latency_ms if self.max_response_latency_ms is None else max(self.max_response_latency_ms, latency_ms)
+      self.responses_valid += 1
+      if self.responses_valid == 1:
+        self._log_diagnostics("signer_response_live")
     self._prune_head()
 
   def observe(self, can_packets: list[tuple[int, list[CanData]]], can_valid: bool) -> None:
@@ -348,6 +408,8 @@ class ToyotaTss3RequestTransport:
     request = SignRequest(seq, application, self.control_epoch, now_ns)
     self.pending_requests.append(request)
     self.requests_by_sequence[seq] = request
+    self.requests_queued += 1
+    self.max_pending_requests = max(self.max_pending_requests, len(self.pending_requests))
     self.pending_sends.extend(build_oracle_transport(seq, application, self.oracle_profile))
 
   def control_generation_due(self, *, enabled: bool, lat_active: bool, long_active: bool) -> bool:
@@ -378,6 +440,8 @@ class ToyotaTss3RequestTransport:
       if enabled and not self.control_enabled:
         self.authority_failed = False
         self.last_failure_reason = ""
+        self.session_open = True
+        self._reset_diagnostics()
         self.next_request_sequence = 0
         self.control_started_ns = 0
         self.last_publication_ns = 0
@@ -405,6 +469,7 @@ class ToyotaTss3RequestTransport:
               self.arm_pending = True
               self.arm_host_frame = frame
             self.pending_sends.append(CanData(NATIVE_08A_ADDR, frame, DOWNSTREAM_BUS))
+            self.publications_sent += 1
 
         # Normal CarController cadence is the only publication scheduler. Keep
         # enough requests in flight to hide the EPS signer round-trip latency.

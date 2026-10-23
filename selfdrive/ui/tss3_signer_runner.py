@@ -17,6 +17,8 @@ CANCEL_FILENAME = "cancel-requested"
 STATUS_SCHEMA = "tss3-request-signer-ui-status-v1"
 INSTALL_SCHEMA = "tss3-request-signer-install-v1"
 INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
+OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v1"
+OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
 
 STAGE_LABELS = {
   "arming": "starting",
@@ -103,6 +105,69 @@ def _load_json_object(path: Path) -> dict[str, Any] | None:
   return value if isinstance(value, dict) else None
 
 
+def classify_control_domain_state(control_state: dict[str, Any] | None) -> dict[str, str]:
+  """Classify only fault evidence that the saved result actually establishes.
+
+  Kai's current peer-health helper decodes a Camry 10-byte Brake 0x102F
+  layout. This Corolla returned eight bytes on the bench. Treat an unsupported
+  monitor as unknown instead of converting it into an observed vehicle fault.
+  Affirmative Brake failure/communication bits still fail closed.
+  """
+  if control_state is None:
+    return {"state": "inconclusive", "reason": "control_domain_state_missing"}
+
+  fault_state = control_state.get("fault_state")
+  brake = fault_state.get("brake") if isinstance(fault_state, dict) else None
+  if not isinstance(brake, dict):
+    return {"state": "inconclusive", "reason": "brake_fault_state_missing"}
+
+  fail = brake.get("0x102D")
+  if isinstance(fail, dict) and fail.get("available") is True:
+    if fail.get("fail_status") is True or fail.get("fail_control") is True:
+      return {"state": "fault", "reason": "brake_failure_bit_set"}
+
+  comm = brake.get("0x102F")
+  if isinstance(comm, dict) and comm.get("available") is True:
+    if comm.get("eps_communication_open") is True:
+      return {"state": "fault", "reason": "brake_eps_communication_open"}
+    if isinstance(fail, dict) and fail.get("available") is True:
+      return {"state": "healthy", "reason": "brake_peer_monitors_clear"}
+
+  if isinstance(comm, dict):
+    error = str(comm.get("error", "")).lower()
+    if "unsupported/truncated data" in error:
+      return {"state": "inconclusive", "reason": "brake_0x102f_layout_unsupported"}
+
+  if control_state.get("peer_health_observed") is True:
+    return {"state": "healthy", "reason": "backend_peer_health_pass"}
+  return {"state": "inconclusive", "reason": "peer_monitor_unavailable"}
+
+
+def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any]) -> None:
+  if run_dir is None:
+    return
+  control_state = _load_json_object(run_dir / "control-domain-state.json")
+  install = _load_json_object(run_dir / "request-signer-install.json")
+  summary = {
+    "schema": OPENPILOT_SUMMARY_SCHEMA,
+    "signer_installed": bool(install is not None and
+                             install.get("schema") == INSTALL_SCHEMA and
+                             install.get("verdict") == INSTALL_PASS_VERDICT),
+    "vehicle_health": classify_control_domain_state(control_state),
+    "ui_status": status,
+  }
+  try:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    destination = run_dir / OPENPILOT_SUMMARY_FILENAME
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+  except OSError:
+    # The original backend artifacts remain authoritative if storage changes
+    # underneath the UI process while it is finalizing.
+    pass
+
+
 def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dict[str, Any]:
   """Do not collapse a proven install into an ambiguous backend failure."""
   if run_dir is None or not status.get("error"):
@@ -112,12 +177,18 @@ def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dic
   if install is None or install.get("schema") != INSTALL_SCHEMA or install.get("verdict") != INSTALL_PASS_VERDICT:
     return status
 
-  detail = "The RAM signer live probe passed, but final vehicle-health verification did not complete."
   control_state = _load_json_object(run_dir / "control-domain-state.json")
-  if control_state is not None and control_state.get("peer_health_observed") is not True:
-    detail += " The peer-health gate was inconclusive or unhealthy; keep the vehicle parked and review the saved result."
+  health = classify_control_domain_state(control_state)
+  if health["state"] == "fault":
+    detail = "The RAM signer live probe passed, but a Brake/EPS peer-health fault was observed. " + \
+             "Keep the vehicle parked and review the saved result."
+  elif health["reason"] == "brake_0x102f_layout_unsupported":
+    detail = "The RAM signer live probe passed and Brake failure bits were clear. This Corolla's 8-byte " + \
+             "Brake 0x102F layout is not decoded by the Camry-oriented verifier, so vehicle health remains " + \
+             "inconclusive. Keep the vehicle parked and review the saved result."
   else:
-    detail += " Keep the vehicle parked and review the saved result."
+    detail = "The RAM signer live probe passed, but final vehicle-health verification was inconclusive. " + \
+             "Keep the vehicle parked and review the saved result."
 
   return {
     **status,
@@ -125,6 +196,8 @@ def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dic
     "detail": detail,
     "progress": max(80, int(status.get("progress", 0))),
     "signer_installed": True,
+    "vehicle_health": health["state"],
+    "vehicle_health_reason": health["reason"],
   }
 
 
@@ -229,5 +302,6 @@ class Tss3SignerRunner:
       else:
         self._set_status(status)
 
-    status = report.finish(self._proc.wait())
-    self._set_status(preserve_install_result(self._run_dir, status))
+    status = preserve_install_result(self._run_dir, report.finish(self._proc.wait()))
+    _write_openpilot_summary(self._run_dir, status)
+    self._set_status(status)

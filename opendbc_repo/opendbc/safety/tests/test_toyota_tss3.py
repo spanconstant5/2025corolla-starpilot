@@ -22,10 +22,12 @@ class TestToyotaTss3CorollaSigner(unittest.TestCase):
     return libsafety_py.make_CANPacket(0x777, 0, bytes((7, 0xC9, 0xA8, int(arm), 0, 0, 0, 0)))
 
   @staticmethod
-  def host_application(*, active: bool = False, angle_raw: int = 0, accel_raw: int = 0):
+  def host_application(*, active: bool = False, angle_raw: int = 0,
+                       accel_raw: int = 0, accel_a_raw: int | None = None,
+                       accel_b_raw: int | None = None):
     application = bytearray.fromhex("0000000880002d4700000000007fff007fff0000c000100032000100")
-    application[8:10] = int(accel_raw).to_bytes(2, "big", signed=True)
-    application[11:13] = int(accel_raw).to_bytes(2, "big", signed=True)
+    application[8:10] = int(accel_raw if accel_a_raw is None else accel_a_raw).to_bytes(2, "big", signed=True)
+    application[11:13] = int(accel_raw if accel_b_raw is None else accel_b_raw).to_bytes(2, "big", signed=True)
     application[18:20] = int(angle_raw).to_bytes(2, "big", signed=True)
     application[21] = 11 if active else 0
     application[24] = 100 if active else 50
@@ -66,6 +68,12 @@ class TestToyotaTss3CorollaSigner(unittest.TestCase):
     self.assertTrue(self.safety.safety_tx_hook(self.admin(True)))
     self.assertTrue(self.safety.safety_tx_hook(self.host_application()))
     self.assertFalse(self.safety.safety_tx_hook(self.host_application(accel_raw=1)))
+
+    # Each redundant longitudinal field is independently fail-closed. This
+    # remains the production policy until both Corolla fields and limits are
+    # established from synchronized in-car evidence.
+    self.assertFalse(self.safety.safety_tx_hook(self.host_application(accel_a_raw=1, accel_b_raw=0)))
+    self.assertFalse(self.safety.safety_tx_hook(self.host_application(accel_a_raw=0, accel_b_raw=-1)))
 
   def test_active_lateral_is_control_gated_and_corolla_angle_bounded(self):
     self.assertTrue(self.safety.safety_tx_hook(self.admin(True)))

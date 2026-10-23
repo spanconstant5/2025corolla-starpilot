@@ -108,6 +108,9 @@ a full EPS power loss removes the resident and requires this sequence again.
 
 ## Remaining vehicle work
 
+The ordered evidence gates and post-route analysis command are maintained in
+[`COROLLA_2025_TSS3_VALIDATION.md`](COROLLA_2025_TSS3_VALIDATION.md).
+
 - Road-qualify this exact StarPilot integration while stationary first, then
   under controlled driving conditions.
 - Reduce or explain Panda RX-buffer overflow and repeat a longer sustained-rate

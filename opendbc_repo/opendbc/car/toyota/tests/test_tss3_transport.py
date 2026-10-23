@@ -126,6 +126,13 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.assertEqual(admin.src, COROLLA_ORACLE_PROFILE.admin_bus)
     self.assertEqual(admin.src, 0)
 
+    diagnostics = transport.diagnostic_snapshot()
+    self.assertEqual(diagnostics["requests_queued"], 2)
+    self.assertEqual(diagnostics["responses_valid"], 1)
+    self.assertEqual(diagnostics["publications_sent"], 1)
+    self.assertEqual(diagnostics["max_pending_requests"], 1)
+    self.assertEqual(diagnostics["last_response_latency_ms"], 8.0)
+
   def test_camry_transport_profile_remains_the_default(self):
     self.assertEqual(build_oracle_transport(1, KNOWN_APPLICATION),
                      build_oracle_transport(1, KNOWN_APPLICATION, CAMRY_ORACLE_PROFILE))
@@ -216,6 +223,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.assertEqual(host.dat[26], 1)
     self.assertEqual(host.dat[8:10], (-250).to_bytes(2, "big", signed=True))
     self.assertNotIn(seq0, self.transport.requests_by_sequence)
+    self.assertEqual(self.transport.diagnostic_snapshot()["requests_superseded"], 1)
 
   def test_ready_responses_are_preserved_in_order(self):
     seq0 = self.start_request(1_000_000_000)
@@ -249,6 +257,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.assertEqual(host.dat[26], 1)
     self.assertEqual(host.dat[8:10], (-250).to_bytes(2, "big", signed=True))
     self.assertNotIn(seq0, self.transport.requests_by_sequence)
+    self.assertEqual(self.transport.diagnostic_snapshot()["responses_failed"], 1)
 
   def test_control_edge_discards_stale_signer_response(self):
     seq0 = self.start_request(1_000_000_000)
@@ -309,9 +318,11 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
 
   def test_disable_releases_request_plane(self):
     self.finish_handoff()
+    self.assertEqual(self.transport.diagnostic_snapshot()["publications_accepted"], 1)
     sends = self.update_control(1_030_000_000, enabled=False, lat_active=False, long_active=False)
     self.assertIn(CanData(ADMIN_ADDR, bytes.fromhex("07c9a80000000000"), ADMIN_BUS), sends)
     self.assertFalse(self.transport.active)
+    self.assertFalse(self.transport.session_open)
 
   def test_invalid_can_releases_request_plane(self):
     self.finish_handoff()
