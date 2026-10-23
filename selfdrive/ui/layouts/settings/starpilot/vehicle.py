@@ -6,7 +6,6 @@ import time
 
 import pyray as rl
 
-from cereal import car
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr, tr_noop
@@ -143,7 +142,7 @@ class VehicleSettingsManagerView(PanelManagerView):
         get_value=signer_install_status,
         on_click=lambda: self._controller._on_select("CorollaRamSigner"),
         enabled=self._controller._can_install_corolla_signer,
-        disabled_label=tr_noop("Vehicle must be ON, in Park, stationary, and disengaged."),
+        disabled_label=tr_noop("Arm while the vehicle is fully OFF/not READY and in Park."),
       ))
     return rows
 
@@ -672,13 +671,8 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
     return self._params.get("CarModel", encoding="utf-8") == "TOYOTA_COROLLA_TSS3"
 
   def _can_install_corolla_signer(self) -> bool:
-    if not self._is_corolla_tss3() or signer_install_status() == "INSTALLING" or ui_state.engaged or not ui_state.started:
-      return False
-    try:
-      CS = ui_state.sm["carState"]
-      return bool(CS.standstill) and CS.gearShifter == car.CarState.GearShifter.park
-    except Exception:
-      return False
+    return bool(self._is_corolla_tss3() and signer_install_status() in ("ARM", "RETRY", "KIT ERROR")
+                and not ui_state.engaged and not ui_state.started)
 
 
   def _on_toggle(self, param_key: str):
@@ -735,7 +729,7 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
   def _on_select(self, key: str):
     if key == "CorollaRamSigner":
       if not self._can_install_corolla_signer():
-        message = tr("Turn the vehicle ON, shift to Park, remain stationary, and disengage openpilot before installing the RAM signer.")
+        message = tr("Turn the vehicle fully OFF/not READY and keep it in Park before arming the RAM signer.")
         gui_app.push_widget(alert_dialog(message))
         return
       request_corolla_signer_install()

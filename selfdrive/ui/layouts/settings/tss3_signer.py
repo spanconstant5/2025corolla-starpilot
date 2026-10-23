@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import threading
 
-from openpilot.selfdrive.car.toyota_tss3_request_signer import (
-  SignerInstallResult,
-  request_signer_kit_compatibility,
-  run_request_signer_install,
-)
+from openpilot.selfdrive.car.toyota_tss3_request_signer import request_signer_kit_compatibility
+from openpilot.selfdrive.ui.tss3_signer_runner import STAGE_LABELS, Tss3SignerRunner
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import DialogResult
@@ -14,7 +11,7 @@ from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dial
 
 
 _state_lock = threading.Lock()
-_state = "INSTALL"
+_state = "ARM"
 
 
 def signer_install_status() -> str:
@@ -28,43 +25,42 @@ def _set_state(state: str) -> None:
     _state = state
 
 
-class CorollaSignerInstallDialog(ConfirmDialog):
+class CorollaSignerBringupDialog(ConfirmDialog):
   def __init__(self):
     super().__init__(
-      tr("Installing the volatile Corolla RAM signer. Keep the vehicle in Park and do not power it off."),
+      tr("Preparing the Corolla RAM signer startup catcher. Do not press POWER yet."),
       tr("CLOSE"),
       cancel_text="",
     )
     self._confirm_button.set_enabled(False)
-    self._result_lock = threading.Lock()
-    self._result: SignerInstallResult | None = None
-    self._rendered_result = False
-    _set_state("INSTALLING")
-    threading.Thread(target=self._worker, name="corolla-ram-signer", daemon=True).start()
+    self._runner = Tss3SignerRunner()
+    self._terminal_rendered = False
+    _set_state("ARMING")
 
-  def _worker(self) -> None:
-    try:
-      result = run_request_signer_install()
-    except Exception as exc:
-      result = SignerInstallResult(
-        False,
-        "RAM signer installer stopped unexpectedly",
-        f"{type(exc).__name__}: {exc}. Do not drive; Panda safety may require an openpilot reboot.",
-      )
-    with self._result_lock:
-      self._result = result
-    _set_state("INSTALL" if result.passed else "RETRY")
+  def hide_event(self):
+    self._runner.request_cancel()
+    super().hide_event()
 
   def _update_state(self):
-    with self._result_lock:
-      result = self._result
-    if result is None or self._rendered_result:
-      return
+    status = self._runner.snapshot()
+    stage = status["stage"]
+    progress = status["progress"]
+    run_dir = self._runner.run_dir
+    saved = f"\n\nResults: {run_dir}" if run_dir is not None else ""
+    self.set_text(
+      f"{status['title']}\n\n{status['detail']}\n\n{progress}% — {STAGE_LABELS.get(stage, stage)}{saved}"
+    )
+    if status["done"] or status["error"]:
+      if not self._terminal_rendered:
+        _set_state("ARM" if status["done"] else "RETRY")
+        self._confirm_button.set_enabled(True)
+        self._terminal_rendered = True
+    else:
+      _set_state(stage.upper())
 
-    self._rendered_result = True
-    saved = f"\n\nResult: {result.output_path}" if result.output_path is not None else ""
-    self.set_text(f"{result.title}\n\n{result.detail}{saved}")
-    self._confirm_button.set_enabled(True)
+
+# Compatibility alias retained for existing imports.
+CorollaSignerInstallDialog = CorollaSignerBringupDialog
 
 
 def request_corolla_signer_install() -> None:
@@ -76,9 +72,9 @@ def request_corolla_signer_install() -> None:
 
   def on_confirm(result: DialogResult) -> None:
     if result == DialogResult.CONFIRM:
-      gui_app.push_widget(CorollaSignerInstallDialog())
+      gui_app.push_widget(CorollaSignerBringupDialog())
 
-  content = tr("Install the verified Corolla signer into volatile EPS RAM?\n\n")
-  content += tr("Vehicle must be ON, in Park, with wheels straight. Do not drive or power off during the install. ")
-  content += tr("This does not flash persistent EPS firmware. The signer must be installed again after the EPS loses power.")
-  gui_app.push_widget(ConfirmDialog(content, tr("INSTALL"), callback=on_confirm))
+  content = tr("Arm the verified Corolla signer while the vehicle is fully OFF/not READY and in Park.\n\n")
+  content += tr("After the page says it is armed, press the brake and POWER normally. Keep the vehicle in Park until verification passes. ")
+  content += tr("This writes only volatile EPS RAM; a full EPS power loss removes the signer.")
+  gui_app.push_widget(ConfirmDialog(content, tr("ARM"), callback=on_confirm))

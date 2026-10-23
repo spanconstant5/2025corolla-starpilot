@@ -12,7 +12,7 @@ class FakeParams:
     return self.model if key == "CarModel" else None
 
 
-def fake_ui_state(model: str, *, started: bool = True, engaged: bool = False,
+def fake_ui_state(model: str, *, started: bool = False, engaged: bool = False,
                   standstill: bool = True, gear=car.CarState.GearShifter.park):
   return SimpleNamespace(
     params=FakeParams(model),
@@ -24,22 +24,20 @@ def fake_ui_state(model: str, *, started: bool = True, engaged: bool = False,
 
 def test_mici_signer_requires_exact_corolla_model(monkeypatch):
   monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state("TOYOTA_CAMRY_TSS3"))
-  monkeypatch.setattr(tss3_signer, "_install_active", False)
+  monkeypatch.setattr(tss3_signer, "_bringup_active", False)
   assert not tss3_signer.corolla_tss3_selected()
   assert not tss3_signer.can_install_corolla_signer()
 
 
-def test_mici_signer_requires_on_park_stationary_and_disengaged(monkeypatch):
-  monkeypatch.setattr(tss3_signer, "_install_active", False)
+def test_mici_signer_requires_off_not_ready_and_disengaged(monkeypatch):
+  monkeypatch.setattr(tss3_signer, "_bringup_active", False)
   monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL))
   assert tss3_signer.can_install_corolla_signer()
 
-  monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL, started=False))
+  monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL, started=True))
   assert not tss3_signer.can_install_corolla_signer()
   monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL, engaged=True))
   assert not tss3_signer.can_install_corolla_signer()
-  monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL, standstill=False))
-  assert not tss3_signer.can_install_corolla_signer()
-  monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(
-    tss3_signer.COROLLA_TSS3_MODEL, gear=car.CarState.GearShifter.drive))
+  monkeypatch.setattr(tss3_signer, "ui_state", fake_ui_state(tss3_signer.COROLLA_TSS3_MODEL))
+  monkeypatch.setattr(tss3_signer, "_bringup_active", True)
   assert not tss3_signer.can_install_corolla_signer()

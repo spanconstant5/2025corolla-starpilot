@@ -8,11 +8,12 @@ from openpilot.selfdrive.car import toyota_tss3_request_signer as signer
 
 def _make_kit(tmp_path: Path, monkeypatch) -> Path:
   tool = tmp_path / "tss3-request-signer"
-  tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+  tool.write_text("#!/bin/sh\ncase \"$1\" in ui-bringup) exit 0 ;; esac\nexit 0\n", encoding="utf-8")
   tool.chmod(0o755)
   host = tmp_path / "runtime" / "exploit" / "ephemeral_runtime" / "tss3_request_signer.py"
   host.parent.mkdir(parents=True)
   host.write_bytes(b"host")
+  (host.parent / "tss3_request_signer_ui_bringup.py").write_bytes(b"ui bringup")
   payload = tmp_path / "bundle" / "payload.bin"
   payload.parent.mkdir()
   payload.write_bytes(b"payload")

@@ -65,12 +65,21 @@ def request_signer_kit_compatibility(tool_path: Path | None = None) -> SignerKit
 
   root = tool.parent
   host_path = root / "runtime" / "exploit" / "ephemeral_runtime" / "tss3_request_signer.py"
+  ui_bringup_path = root / "runtime" / "exploit" / "ephemeral_runtime" / "tss3_request_signer_ui_bringup.py"
   meta_path = root / "bundle" / "request_signer.json"
   payload_path = root / "bundle" / "payload.bin"
 
-  for label, path in (("host runtime", host_path), ("metadata", meta_path), ("payload", payload_path)):
+  for label, path in (("host runtime", host_path), ("UI bringup backend", ui_bringup_path),
+                      ("metadata", meta_path), ("payload", payload_path)):
     if not path.is_file():
       return SignerKitCheck(False, f"Signer {label} missing: {path}")
+
+  try:
+    launcher = tool.read_text(encoding="utf-8")
+  except (OSError, UnicodeDecodeError) as exc:
+    return SignerKitCheck(False, f"Signer launcher unreadable: {type(exc).__name__}: {exc}")
+  if "ui-bringup)" not in launcher:
+    return SignerKitCheck(False, "Signer launcher does not support guided ui-bringup")
 
   try:
     meta: dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))

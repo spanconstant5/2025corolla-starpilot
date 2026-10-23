@@ -72,6 +72,21 @@ malformed or stale lease is removed, while an unrequested native-child exit
 continues through StarPilot's existing recovery path. The rest of openpilot
 and its manager remain running throughout the handoff.
 
+## Guided startup sequence
+
+The settings control runs the kit's `ui-bringup` entry point, not its plain
+`install` command. Arm it while the vehicle is fully OFF/not READY and in Park.
+Wait until the page reports `armed`, then press the brake and POWER normally.
+The backend catches the EPS startup response, requests programming during that
+bounded window, installs the volatile resident, checks peer health, and runs a
+fresh-signing self-test. The Comma 4 page remains visible across the transition
+to READY and reports each validated JSONL stage from the backend.
+
+Closing the page before PROGRAMMING writes the backend's cooperative cancel
+marker. After the programming boundary, bringup is allowed to finish instead of
+being force-killed mid-handoff. Do not drive until the page reports completion;
+a full EPS power loss removes the resident and requires this sequence again.
+
 ## Safety boundaries
 
 - Only manually selected `TOYOTA_COROLLA_TSS3` enters this path.
