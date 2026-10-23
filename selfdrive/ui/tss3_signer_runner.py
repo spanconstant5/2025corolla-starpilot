@@ -15,6 +15,8 @@ DEFAULT_TOOL_PATH = Path("/data/tss3-oracle/tss3-request-signer")
 DEFAULT_RUN_ROOT = Path("/data/tss3-oracle-runs")
 CANCEL_FILENAME = "cancel-requested"
 STATUS_SCHEMA = "tss3-request-signer-ui-status-v1"
+INSTALL_SCHEMA = "tss3-request-signer-install-v1"
+INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
 
 STAGE_LABELS = {
   "arming": "starting",
@@ -91,6 +93,39 @@ def request_cooperative_cancel(run_dir: Path) -> None:
   except OSError:
     # A late/running backend is safer than force-killing an EPS handoff.
     pass
+
+
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return None
+  return value if isinstance(value, dict) else None
+
+
+def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dict[str, Any]:
+  """Do not collapse a proven install into an ambiguous backend failure."""
+  if run_dir is None or not status.get("error"):
+    return status
+
+  install = _load_json_object(run_dir / "request-signer-install.json")
+  if install is None or install.get("schema") != INSTALL_SCHEMA or install.get("verdict") != INSTALL_PASS_VERDICT:
+    return status
+
+  detail = "The RAM signer live probe passed, but final vehicle-health verification did not complete."
+  control_state = _load_json_object(run_dir / "control-domain-state.json")
+  if control_state is not None and control_state.get("peer_health_observed") is not True:
+    detail += " The peer-health gate was inconclusive or unhealthy; keep the vehicle parked and review the saved result."
+  else:
+    detail += " Keep the vehicle parked and review the saved result."
+
+  return {
+    **status,
+    "title": "RAM signer installed; verification incomplete",
+    "detail": detail,
+    "progress": max(80, int(status.get("progress", 0))),
+    "signer_installed": True,
+  }
 
 
 class Tss3SignerRunner:
@@ -194,4 +229,5 @@ class Tss3SignerRunner:
       else:
         self._set_status(status)
 
-    self._set_status(report.finish(self._proc.wait()))
+    status = report.finish(self._proc.wait())
+    self._set_status(preserve_install_result(self._run_dir, status))

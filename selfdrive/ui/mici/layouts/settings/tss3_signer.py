@@ -87,6 +87,9 @@ class CorollaSignerBringupPage(NavScroller):
     if status["done"]:
       self._action_button.set_text("close")
       self._action_button.set_value("signer live; safety restored")
+    elif status["error"] and status.get("signer_installed"):
+      self._action_button.set_text("close")
+      self._action_button.set_value("installed — verification incomplete; do not drive")
     elif status["error"]:
       self._action_button.set_text("close")
       self._action_button.set_value("failed — do not drive")

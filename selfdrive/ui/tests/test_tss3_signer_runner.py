@@ -58,6 +58,39 @@ def test_cancel_is_cooperative_marker(tmp_path: Path):
   assert (run_dir / runner.CANCEL_FILENAME).read_text(encoding="utf-8") == "cancel\n"
 
 
+def test_proven_install_is_preserved_when_peer_verification_fails(tmp_path: Path):
+  (tmp_path / "request-signer-install.json").write_text(json.dumps({
+    "schema": runner.INSTALL_SCHEMA,
+    "verdict": runner.INSTALL_PASS_VERDICT,
+  }), encoding="utf-8")
+  (tmp_path / "control-domain-state.json").write_text(json.dumps({
+    "peer_health_observed": False,
+    "verdict": "control_domain_fault_observed",
+  }), encoding="utf-8")
+  failure = status_row(
+    stage="error", title="UI bringup error", detail="peer fault state unhealthy",
+    progress=70, done=False, error=True,
+  )
+
+  result = runner.preserve_install_result(tmp_path, failure)
+  assert result["error"] is True
+  assert result["done"] is False
+  assert result["signer_installed"] is True
+  assert result["progress"] == 80
+  assert result["title"] == "RAM signer installed; verification incomplete"
+
+
+def test_failed_or_missing_install_is_not_reclassified(tmp_path: Path):
+  failure = status_row(stage="error", done=False, error=True)
+  assert runner.preserve_install_result(tmp_path, failure) == failure
+
+  (tmp_path / "request-signer-install.json").write_text(json.dumps({
+    "schema": runner.INSTALL_SCHEMA,
+    "verdict": "request_signer_live_probe_failed",
+  }), encoding="utf-8")
+  assert runner.preserve_install_result(tmp_path, failure) == failure
+
+
 def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
   commands = []
 
