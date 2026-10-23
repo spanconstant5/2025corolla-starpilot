@@ -56,6 +56,22 @@ frames:
   b000100032000100
 ```
 
+## Panda ownership during installation
+
+The signer installer uses Kai's cooperative direct-Panda lease protocol. It
+writes a live requester PID and unique token to
+`/tmp/openpilot-pandad-direct-lease`, then signals the managed Python `pandad`
+supervisor with `SIGWINCH`. The supervisor interrupts only its native `pandad`
+child and publishes the exact token to
+`/tmp/openpilot-pandad-direct-ready` after that child exits. The signer never
+steals Panda without this acknowledgement.
+
+When the installer removes its lease, the supervisor clears the ready marker
+and restarts native `pandad` without taking the Panda reset/reflash path. A
+malformed or stale lease is removed, while an unrequested native-child exit
+continues through StarPilot's existing recovery path. The rest of openpilot
+and its manager remain running throughout the handoff.
+
 ## Safety boundaries
 
 - Only manually selected `TOYOTA_COROLLA_TSS3` enters this path.
