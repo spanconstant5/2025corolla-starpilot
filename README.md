@@ -47,7 +47,8 @@ full vehicle power cycle, turn the vehicle on, leave it in Park with the wheels
 straight, and open:
 
 ```text
-StarPilot > Vehicle Settings > Corolla RAM Signer > INSTALL
+C3/C3X: StarPilot > Vehicle Settings > Corolla RAM Signer > INSTALL
+C4:     Settings > Vehicle > Corolla RAM Signer > slide to install
 ```
 
 The action is shown only for the manually selected Corolla TSS3 platform and
