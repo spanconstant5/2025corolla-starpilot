@@ -67,7 +67,9 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   signer_responses = FrameEvidence()
   signer_requests = FrameEvidence()
   host_08a = FrameEvidence()
-  host_08a_echo = FrameEvidence()
+  bus_0_tx_receipts_08a = FrameEvidence()
+  matched_host_08a_echo = FrameEvidence()
+  host_payloads: Counter[bytes] = Counter()
   host_longitudinal_nonzero = 0
   transport_events: list[str] = []
   start_ns: int | None = None
@@ -95,6 +97,7 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
           signer_requests.observe(bus, data)
         elif address == 0x08A:
           host_08a.observe(bus, data)
+          host_payloads[data] += 1
           if len(data) >= 13 and (data[8:10] != b"\0\0" or data[11:13] != b"\0\0"):
             host_longitudinal_nonzero += 1
         continue
@@ -107,7 +110,13 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
         elif address == 0x7A9:
           signer_responses.observe(bus, data)
       elif address == 0x08A:
-        host_08a_echo.observe(bus, data)
+        bus_0_tx_receipts_08a.observe(bus, data)
+        # Forwarded native 0x08A traffic also creates bus-0 TX receipts. Only
+        # call a receipt a host acceptance when its complete payload matches a
+        # frame observed on sendcan during this route.
+        if host_payloads[data] > 0:
+          matched_host_08a_echo.observe(bus, data)
+          host_payloads[data] -= 1
 
   duration_s = 0.0 if start_ns is None or end_ns is None else round((end_ns - start_ns) / 1e9, 3)
   return {
@@ -117,7 +126,8 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
       "requests_0x777": signer_requests.as_dict(),
       "responses_0x7a9": signer_responses.as_dict(),
       "host_publications_0x08a": host_08a.as_dict(),
-      "host_publication_echoes_0x08a": host_08a_echo.as_dict(),
+      "bus_0_tx_receipts_0x08a": bus_0_tx_receipts_08a.as_dict(),
+      "matched_host_publication_echoes_0x08a": matched_host_08a_echo.as_dict(),
       "host_longitudinal_nonzero_count": host_longitudinal_nonzero,
       "transport_log_events": transport_events,
     },

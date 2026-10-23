@@ -37,7 +37,8 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["signer"]["requests_0x777"]["count"] == 1
   assert result["signer"]["responses_0x7a9"]["count"] == 1
   assert result["signer"]["host_publications_0x08a"]["count"] == 1
-  assert result["signer"]["host_publication_echoes_0x08a"]["count"] == 1
+  assert result["signer"]["bus_0_tx_receipts_0x08a"]["count"] == 1
+  assert result["signer"]["matched_host_publication_echoes_0x08a"]["count"] == 1
   assert result["signer"]["host_longitudinal_nonzero_count"] == 0
   assert result["native_candidates"]["0x08a"]["buses"] == {"2": 1}
   assert result["native_candidates"]["0x160"]["buses"] == {"1": 1}

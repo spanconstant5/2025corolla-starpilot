@@ -86,7 +86,7 @@ class TestToyotaTss3CorollaSigner(unittest.TestCase):
     angle = bytearray(32)
     angle[1] = 1  # 1.5 degrees, which is 26 request-angle counts after scaling.
     for _ in range(6):
-      self.safety.safety_rx_hook(libsafety_py.make_CANPacket(0x025, 0, bytes(angle)))
+      self.safety.safety_rx_hook(libsafety_py.make_CANPacket(0x025, 2, bytes(angle)))
 
     self.assertTrue(self.safety.safety_tx_hook(self.admin(True)))
     self.assertTrue(self.safety.safety_tx_hook(self.host_application(angle_raw=26)))

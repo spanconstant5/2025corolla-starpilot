@@ -5,7 +5,7 @@ import threading
 from openpilot.selfdrive.car.toyota_tss3_request_signer import request_signer_kit_compatibility
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, GreyBigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
-from openpilot.selfdrive.ui.tss3_signer_runner import STAGE_LABELS, Tss3SignerRunner
+from openpilot.selfdrive.ui.tss3_signer_runner import STAGE_LABELS, Tss3SignerRunner, stage_instruction
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets.scroller import NavScroller
@@ -51,8 +51,8 @@ class CorollaSignerBringupPage(NavScroller):
     self._status_card = GreyBigButton("corolla RAM signer", "preparing startup catcher")
     self._progress_card = GreyBigButton("progress", "0%\nstarting")
     self._contract_card = GreyBigButton(
-      "RAM-only startup path",
-      "wait for the armed message\nthen press brake + POWER normally\nkeep the vehicle in Park",
+      "next step",
+      "do not press POWER yet\nwait for the armed status",
     )
     self._action_button = BigButton("cancel bringup", "cooperative before PROGRAMMING")
     self._action_button.set_click_callback(self.dismiss)
@@ -83,6 +83,9 @@ class CorollaSignerBringupPage(NavScroller):
     self._status_card.set_text(status["title"])
     self._status_card.set_value(status["detail"])
     self._progress_card.set_value(f"{progress}%\n{STAGE_LABELS.get(stage, stage)}")
+    instruction_title, instruction_detail = stage_instruction(stage, signer_installed=bool(status.get("signer_installed")))
+    self._contract_card.set_text(instruction_title)
+    self._contract_card.set_value(instruction_detail)
 
     if status["done"]:
       self._action_button.set_text("close")

@@ -145,20 +145,20 @@ static void toyota_rx_hook(const CANPacket_t *msg) {
       // Native FRC 0x08A remains only the engagement and presence input.
       pcm_cruise_check(GET_BIT(msg, 27U));
     }
-    if ((msg->bus == 0U) && (msg->addr == 0x25U)) {
+    if ((msg->bus == 2U) && (msg->addr == 0x25U)) {
       int angle_coarse = ((msg->data[0] & 0xFU) << 8U) | msg->data[1];
       angle_coarse = to_signed(angle_coarse, 12);
       const int angle_fraction = to_signed((msg->data[4] >> 4U) & 0xFU, 4);
       const int angle_tenths = (angle_coarse * 15) + angle_fraction;
       update_sample(&angle_meas, ROUND(((float)angle_tenths * 1787.0F) / 1024.0F));
     }
-    if ((msg->bus == 0U) && (msg->addr == 0x116U)) {
+    if ((msg->bus == 2U) && (msg->addr == 0x116U)) {
       gas_pressed = msg->data[1] != 0U;
     }
-    if ((msg->bus == 0U) && (msg->addr == 0x101U)) {
+    if ((msg->bus == 2U) && (msg->addr == 0x101U)) {
       brake_pressed = GET_BIT(msg, 3U);
     }
-    if ((msg->bus == 0U) && (msg->addr == 0xAAU)) {
+    if ((msg->bus == 2U) && (msg->addr == 0xAAU)) {
       int speed = 0;
       for (uint8_t i = 0U; i < 8U; i += 2U) {
         const int wheel_speed = ((msg->data[i] & 0x7FU) << 8U) | msg->data[i + 1U];
@@ -653,10 +653,10 @@ static safety_config toyota_init(uint16_t param) {
 
   if (toyota_tss3_signer) {
     static RxCheck toyota_corolla_tss3_rx_checks[] = {
-      {.msg = {{0x025, 0, 32, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
-      {.msg = {{0x0AA, 0, 8, 100U, .ignore_checksum = true, .ignore_counter = true}, {0}, {0}}},
-      {.msg = {{0x116, 0, 8, 40U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
-      {.msg = {{0x101, 0, 8, 50U, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
+      {.msg = {{0x025, 2, 32, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
+      {.msg = {{0x0AA, 2, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
+      {.msg = {{0x116, 2, 8, 40U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
+      {.msg = {{0x101, 2, 8, 50U, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
       {.msg = {{0x08A, 2, 32, 40U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}}},
     };
     SET_RX_CHECKS(toyota_corolla_tss3_rx_checks, ret);

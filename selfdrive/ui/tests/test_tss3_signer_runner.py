@@ -38,6 +38,14 @@ def test_malformed_status_cannot_report_success():
   assert result["done"] is False
 
 
+def test_stage_instruction_does_not_keep_showing_wait_for_armed():
+  assert "wait for the armed" in runner.stage_instruction("arming")[1]
+  assert "press brake + POWER" in runner.stage_instruction("armed")[1]
+  assert "wait for the armed" not in runner.stage_instruction("verifying")[1]
+  assert runner.stage_instruction("verifying")[0] == "bringup in progress"
+  assert "signer probe passed" in runner.stage_instruction("error", signer_installed=True)[1]
+
+
 def test_done_is_not_published_before_backend_exit():
   signer_runner = runner.Tss3SignerRunner(start=False)
 

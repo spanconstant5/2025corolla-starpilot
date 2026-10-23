@@ -32,6 +32,21 @@ STAGE_LABELS = {
 }
 
 
+def stage_instruction(stage: str, *, signer_installed: bool = False) -> tuple[str, str]:
+  """Return the operator action for the current phase, not stale startup text."""
+  if stage == "arming":
+    return "next step", "do not press POWER yet\nwait for the armed status"
+  if stage == "armed":
+    return "startup catcher armed", "press brake + POWER normally\nkeep the vehicle in Park"
+  if stage in ("programming", "waiting_ready", "verifying", "finishing"):
+    return "bringup in progress", "no action needed\nkeep the vehicle in Park"
+  if stage == "done":
+    return "bringup complete", "signer live; safety restored"
+  if signer_installed:
+    return "verification incomplete", "signer probe passed\ndo not drive; review saved result"
+  return "bringup stopped", "do not drive\nreview the error and saved result"
+
+
 def parse_status(line: str) -> dict[str, Any] | None:
   try:
     row = json.loads(line)

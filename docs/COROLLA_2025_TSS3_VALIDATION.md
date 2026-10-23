@@ -12,6 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
+| Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
 | Longitudinal control | Disabled | Interface, controller, and Panda safety all keep both acceleration fields zero. IDs and limits are not yet accepted as Corolla-live evidence. |
 
@@ -35,6 +36,14 @@ to the route log:
 This allows a parking-lot test to finish without live SSH. Preserve and upload
 the `rlog.zst` afterward; video files are not needed for this analysis.
 
+The October 23 route pair also established that forwarded stock traffic may be
+split between bus 0 RX records and `src=0x80` TX receipts. Before the topology
+fix this caused `canBusMissing`, `canError`, and `controlsMismatch`, so normal
+control never issued a signer request. Replaying the native bus-2 stream after
+the fix produces zero invalid Panda RX checks. A final parser invalid state at
+the end of one short log was caused only by the recording ending 157 ms after
+its last wheel-speed frame.
+
 Run the offline report with:
 
 ```bash
@@ -43,8 +52,10 @@ python3 tools/corolla_tss3_route_evidence.py /path/to/rlog.zst \
 ```
 
 The report separates native `0x08A`, candidate `0x160`, signer `0x7A9`, host
-`sendcan` publications, Panda echoes, and the transport lifecycle records. It
-also lists which bytes changed in native candidate frames.
+`sendcan` publications, all bus-0 TX receipts, payload-matched host acceptance,
+and the transport lifecycle records. Forwarded stock `0x08A` also produces TX
+receipts and is never counted as host acceptance without a matching `sendcan`
+frame. The report also lists which bytes changed in native candidate frames.
 
 ## In-car gate order
 

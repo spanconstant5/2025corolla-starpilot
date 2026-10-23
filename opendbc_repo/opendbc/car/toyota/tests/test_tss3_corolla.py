@@ -2,8 +2,9 @@
 import unittest
 
 from opendbc.can import CANDefine, CANParser
-from opendbc.car import CanData, structs
+from opendbc.car import Bus, CanData, structs
 from opendbc.can import CANPacker
+from opendbc.car.toyota.carstate import CarState
 from opendbc.car.toyota.interface import CarInterface
 from opendbc.car.toyota.tss3 import COROLLA_ORACLE_PROFILE, build_host_application, build_oracle_transport
 from opendbc.car.toyota.values import CAR, ToyotaSafetyFlags
@@ -44,6 +45,9 @@ class TestToyotaTss3SharedDbc(unittest.TestCase):
     self.assertTrue(cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_SIGNER)
     self.assertTrue(cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_08A_HOST)
     self.assertTrue(cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_COROLLA_SIGNER)
+    parsers = CarState.get_can_parsers(cp)
+    self.assertEqual(parsers[Bus.pt].bus, 2)
+    self.assertEqual(parsers[Bus.cam].bus, 2)
 
   def test_corolla_inactive_application_matches_live_known_answer(self):
     packer = CANPacker("toyota_tss3_pt_generated")

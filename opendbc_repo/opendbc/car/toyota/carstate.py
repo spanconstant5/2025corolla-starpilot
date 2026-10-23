@@ -354,7 +354,7 @@ class CarState(CarStateBase):
       ret.rightBlindspot = bool(source_cp.vl["BSM"]["R_ADJACENT"] or source_cp.vl["BSM"]["R_APPROACHING"])
 
   def update_tss3(self, can_parsers, starpilot_toggles):
-    """Decode Corolla state from bus 0 and the camera/source plane on bus 2."""
+    """Decode Corolla state from the full-rate native source plane on bus 2."""
     cp = can_parsers[Bus.pt]
     source_cp = can_parsers[Bus.cam]
     ret = structs.CarState()
@@ -431,7 +431,10 @@ class CarState(CarStateBase):
       if CP.enableBsm:
         source_messages.append(("BSM", 1))
       return {
-        Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
+        # Live route evidence shows the complete native stream on bus 2. The
+        # bus-0 copy is a forwarded TX stream whose records are split between
+        # src 0 and src 0x80, so treating it as RX produces false timeouts.
+        Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 2),
         Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], source_messages, 2),
       }
 
