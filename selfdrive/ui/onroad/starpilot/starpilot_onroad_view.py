@@ -8,7 +8,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.starpilot.rivian_lateral_mode import rivian_lateral_mode
 from openpilot.selfdrive.ui.onroad.starpilot.widget_layout_manager import WidgetLayoutManager
 from openpilot.selfdrive.ui.onroad.starpilot.widgets import (
-  SetSpeedWidget, SpeedLimitWidget, PedalIconsWidget,
+  UnifiedSpeedWidget, PedalIconsWidget,
   AetherGaugeWidget, PersonalityButtonWidget, DriverMonitorWidget,
   SteeringWheelWidget, StoppedTimerWidget, ModelSourceWidget
 )
@@ -21,12 +21,10 @@ from openpilot.selfdrive.ui.onroad.starpilot.weather_icon import render_weather_
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   get_screen_edge_color,
 )
-from openpilot.selfdrive.ui.lib.starpilot_visuals import get_border_roundness
 from openpilot.starpilot.common.favorite_slots import (
   build_favorite_slot_options,
   filter_favorite_slot_options,
   favorite_key_is_valid,
-  is_bool_param,
 )
 
 from openpilot.system.ui.lib.application import MousePos, gui_app, FontWeight
@@ -53,6 +51,7 @@ class StarPilotOnroadView(AugmentedRoadView):
       ui_state.ui_params,
       ui_state.params_memory,
       self._favorite_slot_options,
+      cache_render_texture=gui_app.cached_render_texture,
     )
     self._favorite_input_consumed = False
 
@@ -64,8 +63,7 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._hud_renderer.draw_exp_button = False
 
     # Initialize layout widgets
-    self._set_speed_widget = SetSpeedWidget(self._hud_renderer)
-    self._speed_limit_widget = SpeedLimitWidget()
+    self._unified_speed_widget = UnifiedSpeedWidget(self._hud_renderer)
     self._aethergauge_widget = AetherGaugeWidget(self._hud_renderer)
     self._steering_wheel_widget = SteeringWheelWidget(self._hud_renderer._exp_button)
     self._pedals_widget = PedalIconsWidget()
@@ -75,8 +73,7 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._stopped_timer_widget = StoppedTimerWidget(self.is_in_reverse)
 
     # Register to layout zones
-    self.layout_manager.register_widget("left", self._set_speed_widget)
-    self.layout_manager.register_widget("left", self._speed_limit_widget)
+    self.layout_manager.register_widget("left", self._unified_speed_widget)
     self.layout_manager.register_widget("left", self._aethergauge_widget)
     self.layout_manager.register_widget("right", self._steering_wheel_widget)
     self.layout_manager.register_widget("right", self._pedals_widget)
@@ -85,8 +82,7 @@ class StarPilotOnroadView(AugmentedRoadView):
     self.layout_manager.register_widget("bottom", self._driver_monitor_widget)
 
     # Register as child widgets for click propagation
-    self._child(self._set_speed_widget)
-    self._child(self._speed_limit_widget)
+    self._child(self._unified_speed_widget)
     self._child(self._aethergauge_widget)
     self._child(self._steering_wheel_widget)
     self._child(self._pedals_widget)
@@ -101,10 +97,6 @@ class StarPilotOnroadView(AugmentedRoadView):
 
   def _render(self, rect: rl.Rectangle):
     border_width = self._get_border_width()
-    border_roundness = get_border_roundness(rect, border_width)
-    border_color = get_pulse_glide_border_color(ui_state.sm, get_screen_edge_color(ui_state))
-    rl.draw_rectangle_rounded(rect, border_roundness, 10, border_color)
-    render_background_effects(rect, border_width)
 
     # The favorite menu has first claim on the lower-left gesture. Filtering
     # its events before the inherited HUD/widgets render prevents a corner tap
@@ -131,15 +123,18 @@ class StarPilotOnroadView(AugmentedRoadView):
       super()._render(rect)
 
       if not ui_state.started:
+        self._unified_speed_widget.collapse_sources()
         self._favorite_radial_menu.collapse()
         return
 
       if self._draw_hud_controls:
         dm = self.driver_state_renderer
         self.layout_manager.update_layout(self._content_rect, is_rhd=dm.is_rhd if dm else False)
-        self._render_slc()
+        self._render_speed_card()
         self._render_overlays()
         self._render_road_name()
+      else:
+        self._unified_speed_widget.collapse_sources()
 
       self._pip_sidecam.render(self._content_rect)
 
@@ -161,19 +156,22 @@ class StarPilotOnroadView(AugmentedRoadView):
 
   def _draw_border(self, rect: rl.Rectangle):
     border_width = self._get_border_width()
-    border_roundness = get_border_roundness(rect, border_width)
-    rl.draw_rectangle_rounded_lines_ex(rect, border_roundness, 10, border_width, rl.BLACK)
+    if self._draw_hud_controls and not self._full_alert_showing():
+      self._favorite_radial_menu.render_corner_hint(self._content_rect)
+    rl.draw_rectangle_lines_ex(rect, border_width, rl.BLACK)
     border_rect = rl.Rectangle(rect.x + border_width, rect.y + border_width,
                                 rect.width - 2 * border_width, rect.height - 2 * border_width)
+    border_color = get_pulse_glide_border_color(ui_state.sm, get_screen_edge_color(ui_state))
+    rl.draw_rectangle_rounded_lines_ex(border_rect, 0.12, 10, border_width, border_color)
+    render_background_effects(rect, border_width)
     render_overlay(border_rect, border_width)
 
-  def _render_slc(self):
+  def _render_speed_card(self):
     if self._full_alert_showing():
+      self._unified_speed_widget.collapse_sources()
       return
-    if self._speed_limit_widget.is_visible:
-      self._speed_limit_widget.render(self._speed_limit_widget.rect)
-    if self._set_speed_widget.is_visible:
-      self._set_speed_widget.render(self._set_speed_widget.rect)
+    if self._unified_speed_widget.is_visible:
+      self._unified_speed_widget.render(self._unified_speed_widget.rect)
 
   def _render_overlays(self):
     alert_showing, _ = self.alert_renderer.will_render()
@@ -186,7 +184,7 @@ class StarPilotOnroadView(AugmentedRoadView):
 
     self._render_developer_metrics()
 
-    self.layout_manager.render_widgets(exclude={"speed_limit", "set_speed"})
+    self.layout_manager.render_widgets(exclude={"unified_speed"})
 
     self._render_torque_bar()
     self._render_bottom_row_widgets()
@@ -207,8 +205,8 @@ class StarPilotOnroadView(AugmentedRoadView):
     mr = self.model_renderer
 
     if mr._path.projected_points.size:
-      # Path edges (always rendered if track_edge_vertices exist)
-      if mr._track_edge_vertices.size >= 4:
+      # The default path-edge width is zero, which produces no visible strip.
+      if mr._path_edge_width > 0.0 and mr._track_edge_vertices.size >= 4:
         render_path_edges(mr)
 
       # Render adjacent lanes (incorporates both adjacent path and blind spot warnings)
@@ -231,7 +229,7 @@ class StarPilotOnroadView(AugmentedRoadView):
     # Check if click maps to any of the layout widgets
     for zone in self.layout_manager.zones.values():
       for widget in zone:
-        if widget.is_visible and widget.blocks_pointer and rl.check_collision_point_rec(mouse_pos, widget.rect):
+        if widget.is_visible and widget.blocks_pointer and widget.contains_pointer(mouse_pos):
           return
     super()._handle_mouse_press(mouse_pos)
 

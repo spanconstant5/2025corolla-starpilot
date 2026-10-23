@@ -5,8 +5,10 @@ from cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.lead_behavior import should_disable_far_lead_throttle
+from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_far_lead_coast_headway_floor
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import COMFORT_BRAKE, LEAD_DANGER_FACTOR, desired_follow_distance, get_jerk_factor, get_T_FOLLOW
 
+from openpilot.starpilot.common.longitudinal_personality_profiles import active_personality_id, interpolate_category_curve, resolve_personality_category
 from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, MAX_T_FOLLOW
 
 TRAFFIC_MODE_BP = [0., CITY_SPEED_LIMIT]
@@ -53,8 +55,21 @@ class StarPilotFollowing:
 
   def update(self, long_control_active, v_ego, sm, starpilot_toggles):
     personality = get_longitudinal_personality(sm)
+    traffic_mode = sm["starpilotCarState"].trafficModeEnabled
+    personality_following = None
+    personality_id = active_personality_id(traffic_mode, personality)
+    profile_enabled = personality_id is not None and getattr(
+      starpilot_toggles, f"{personality_id}_personality_profile", True
+    )
+    if getattr(starpilot_toggles, "custom_personalities", False) and profile_enabled:
+      personality_following = resolve_personality_category(
+        getattr(starpilot_toggles, "longitudinal_personality_profiles", {}),
+        traffic_mode,
+        personality,
+        "following",
+      )
 
-    if long_control_active and sm["starpilotCarState"].trafficModeEnabled:
+    if long_control_active and traffic_mode:
       if sm["carState"].aEgo >= 0:
         self.base_acceleration_jerk = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_jerk_acceleration)
         self.base_speed_jerk = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_jerk_speed)
@@ -63,7 +78,10 @@ class StarPilotFollowing:
         self.base_speed_jerk = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_jerk_speed_decrease)
 
       self.base_danger_jerk = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_jerk_danger)
-      self.t_follow = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_follow)
+      if personality_following is not None:
+        self.t_follow = interpolate_category_curve("following", v_ego, personality_following, False, False)
+      else:
+        self.t_follow = np.interp(v_ego, TRAFFIC_MODE_BP, starpilot_toggles.traffic_mode_follow)
     elif long_control_active:
       if sm["carState"].aEgo >= 0:
         self.base_acceleration_jerk, self.base_danger_jerk, self.base_speed_jerk = get_jerk_factor(
@@ -80,16 +98,19 @@ class StarPilotFollowing:
           starpilot_toggles.custom_personalities, personality
         )
 
-      self.t_follow = get_T_FOLLOW(
-        starpilot_toggles.aggressive_follow,
-        starpilot_toggles.standard_follow,
-        starpilot_toggles.relaxed_follow,
-        starpilot_toggles.custom_personalities, personality
-      )
-      if isinstance(self.t_follow, (list, tuple)):
-        self.t_follow = float(np.interp(v_ego, PERSONALITY_BP, self.t_follow))
+      if personality_following is not None:
+        self.t_follow = interpolate_category_curve("following", v_ego, personality_following, False, False)
       else:
-        self.t_follow = float(self.t_follow)
+        self.t_follow = get_T_FOLLOW(
+          starpilot_toggles.aggressive_follow,
+          starpilot_toggles.standard_follow,
+          starpilot_toggles.relaxed_follow,
+          starpilot_toggles.custom_personalities, personality
+        )
+        if isinstance(self.t_follow, (list, tuple)):
+          self.t_follow = float(np.interp(v_ego, PERSONALITY_BP, self.t_follow))
+        else:
+          self.t_follow = float(self.t_follow)
     else:
       self.base_acceleration_jerk = 0
       self.base_danger_jerk = 0
@@ -116,7 +137,14 @@ class StarPilotFollowing:
       v_lead = self.starpilot_planner.lead_one.vLead
       closing_speed = max(0.0, v_ego - v_lead)
       desired_gap = float(desired_follow_distance(v_ego, v_lead, self.t_follow))
-      self.disable_throttle = should_disable_far_lead_throttle(v_ego, lead_distance, desired_gap, closing_speed, self.following_lead)
+      try:
+        car_params = sm["carParams"]
+      except KeyError:
+        car_params = None
+      self.disable_throttle = should_disable_far_lead_throttle(
+        v_ego, lead_distance, desired_gap, closing_speed, self.following_lead,
+        get_far_lead_coast_headway_floor(car_params),
+      )
 
     if long_control_active and self.starpilot_planner.tracking_lead:
       self.update_follow_values(self.starpilot_planner.lead_one.dRel, v_ego, self.starpilot_planner.lead_one.vLead, starpilot_toggles)

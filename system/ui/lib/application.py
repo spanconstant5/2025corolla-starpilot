@@ -23,7 +23,7 @@ from openpilot.system.ui.lib.multilang import multilang
 from openpilot.common.realtime import Ratekeeper
 
 DEVICE_TYPE = HARDWARE.get_device_type()
-_DEFAULT_FPS = int(os.getenv("FPS", {'tizi': 20}.get(DEVICE_TYPE, 60)))
+_DEFAULT_FPS = int(os.getenv("FPS", "60"))
 FPS_LOG_INTERVAL = 5  # Seconds between logging FPS drops
 FPS_DROP_THRESHOLD = 0.9  # FPS drop threshold for triggering a warning
 FPS_CRITICAL_THRESHOLD = 0.5  # Critical threshold for triggering strict actions
@@ -39,6 +39,7 @@ BIG_UI = os.getenv("BIG", "0") == "1"
 MACOS = platform.system() == "Darwin"
 ENABLE_VSYNC = os.getenv("ENABLE_VSYNC", "0") == "1"
 MICI_FORCE_RENDER_TEXTURE = os.getenv("MICI_FORCE_RENDER_TEXTURE", "0") == "1"
+TICI_FORCE_RENDER_TEXTURE = os.getenv("TICI_FORCE_RENDER_TEXTURE", "0") == "1"
 BURN_IN_PREVENTION = os.getenv("BURN_IN_PREVENTION", "0" if PC else "1") == "1"
 BURN_IN_SHIFT_INTERVAL = max(1.0, float(os.getenv("BURN_IN_SHIFT_INTERVAL", "180")))
 BURN_IN_SHIFT_PIXELS = max(0, int(os.getenv("BURN_IN_SHIFT_PIXELS", "2")))
@@ -65,7 +66,7 @@ OFFSCREEN = os.getenv("OFFSCREEN") == "1"  # Disable FPS limiting for fast offli
 
 
 def _raylib_target_fps(fps: int) -> int:
-  return 0 if OFFSCREEN else fps
+  return 0 if OFFSCREEN or (DEVICE_TYPE == "mici" and not PC) else fps
 
 GL_VERSION = """
 #version 300 es
@@ -193,6 +194,14 @@ class MouseEvent(NamedTuple):
   left_released: bool
   left_down: bool
   t: float
+
+
+class FrameTiming(NamedTuple):
+  frame_ms: float = 0.0
+  cpu_ms: float = 0.0
+  draw_ms: float = 0.0
+  update_ms: float = 0.0
+  present_ms: float = 0.0
 
 
 class DesktopMouseSample(NamedTuple):
@@ -433,7 +442,7 @@ class MouseState:
             self._append_mouse_event(event)
         return
 
-      left_down = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)  # noqa: TID251
+      left_down = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
       left_pressed = (
         rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT) or  # noqa: TID251
         (left_down and not self._desktop_left_down)
@@ -525,6 +534,7 @@ class GuiApplication:
     self._last_fps_log_time: float = time.monotonic()
     self._burn_in_start_time = time.monotonic()
     self._frame = 0
+    self.frame_timing = FrameTiming()
     self._window_close_requested = False
     self._nav_stack: list[object] = []
     self._nav_stack_ticks: list[Callable[[], None]] = []
@@ -610,6 +620,16 @@ class GuiApplication:
   def request_close(self):
     self._window_close_requested = True
 
+  def _needs_render_texture(self) -> bool:
+    return bool(
+      (self._scale != 1.0 and not PC)
+      or BURN_IN_MODE
+      or RECORD
+      or MICI_FORCE_RENDER_TEXTURE
+      or TICI_FORCE_RENDER_TEXTURE
+      or WHITE_LUMINANCE_CAP < 1.0
+    )
+
   def init_window(self, title: str, fps: int = _DEFAULT_FPS):
     with self._startup_profile_context():
       def _request_close(sig, frame):
@@ -630,12 +650,7 @@ class GuiApplication:
       self._render_texture_width = max(1, int(round(self._scaled_width * self._pixel_scale_x)))
       self._render_texture_height = max(1, int(round(self._scaled_height * self._pixel_scale_y)))
 
-      # Keep big-UI burn-in movement in final-frame composition. Translating the live EGL
-      # camera/widget pass can corrupt the camera presentation instead of shifting the UI.
-      needs_render_texture = ((self._scale != 1.0 and not PC) or BURN_IN_MODE or RECORD or
-                              MICI_FORCE_RENDER_TEXTURE or
-                              (BURN_IN_PREVENTION and DEVICE_TYPE != "mici") or
-                              WHITE_LUMINANCE_CAP < 1.0)
+      needs_render_texture = self._needs_render_texture()
       if PC and self._scale != 1.0:
         rl.set_mouse_scale(1 / self._scale, 1 / self._scale)
       if PC:
@@ -643,6 +658,8 @@ class GuiApplication:
       if needs_render_texture:
         if MICI_FORCE_RENDER_TEXTURE:
           cloudlog.warning("Forcing render texture path for mici UI")
+        elif TICI_FORCE_RENDER_TEXTURE:
+          cloudlog.warning("Forcing render texture path for tici UI")
         self._render_texture = rl.load_render_texture(self._render_texture_width, self._render_texture_height)
         rl.set_texture_filter(self._render_texture.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
 
@@ -1008,6 +1025,9 @@ class GuiApplication:
       rl.unload_shader(self._white_luminance_shader)
       self._white_luminance_shader = None
 
+    if hasattr(rl, "_orig_begin_scissor_mode"):
+      rl.begin_scissor_mode = rl._orig_begin_scissor_mode
+
     self._mouse.stop()
 
     self.close_ffmpeg()
@@ -1031,6 +1051,8 @@ class GuiApplication:
         self._render_profiler.enable()
 
       while not (self._window_close_requested or rl.window_should_close()):
+        frame_start = time.monotonic()
+        cpu_start = time.thread_time()
         self._mark_progress("gui_app.loop_start")
         self._apply_render_mode()
         if PC:
@@ -1087,12 +1109,18 @@ class GuiApplication:
 
         # Only render top widgets
         self._mark_progress("gui_app.before_widget_render")
-        for widget in self._nav_stack[-self._nav_stack_widgets_to_render:]:
+        viewport = rl.Rectangle(0, 0, self.width, self.height)
+        widgets = self._nav_stack[-self._nav_stack_widgets_to_render:]
+        if len(widgets) > 1 and widgets[-1].covers_background(viewport):
+          widgets = widgets[-1:]
+        for widget in widgets:
           widget.render(rl.Rectangle(0, 0, self.width, self.height))
         self._mark_progress("gui_app.after_widget_render")
 
         self._mark_progress("gui_app.frame_ready")
+        draw_end = time.monotonic()
         yield True
+        update_end = time.monotonic()
 
         if needs_render_transform:
           rl.rl_pop_matrix()
@@ -1136,6 +1164,7 @@ class GuiApplication:
         self._mark_progress("gui_app.before_end_drawing")
         rl.end_drawing()
         self._mark_progress("gui_app.after_end_drawing")
+        present_end = time.monotonic()
         self._populate_render_texture_cache()
 
         if RECORD:
@@ -1145,6 +1174,13 @@ class GuiApplication:
           self._ffmpeg_queue.put(data)  # Async write via background thread
           rl.unload_image(image)
 
+        self.frame_timing = FrameTiming(
+          (time.monotonic() - frame_start) * 1000,
+          (time.thread_time() - cpu_start) * 1000,
+          (draw_end - frame_start) * 1000,
+          (update_end - draw_end) * 1000,
+          (present_end - update_end) * 1000,
+        )
         self._monitor_fps()
         self._frame += 1
         self._mark_progress("gui_app.loop_idle")
@@ -1219,18 +1255,18 @@ class GuiApplication:
     if not hasattr(rl, "_orig_begin_scissor_mode"):
       rl._orig_begin_scissor_mode = rl.begin_scissor_mode
 
-    scale_x = self._scale * (self._pixel_scale_x if self._render_texture else 1.0)
-    scale_y = self._scale * (self._pixel_scale_y if self._render_texture else 1.0)
-    if scale_x == 1.0 and scale_y == 1.0:
-      rl.begin_scissor_mode = rl._orig_begin_scissor_mode
-      return
-
-    def _begin_scissor_mode_scaled(x, y, width, height):
+    def _begin_scissor_mode(x, y, width, height):
+      scale_x = self._scale * (self._pixel_scale_x if self._render_texture else 1.0)
+      scale_y = self._scale * (self._pixel_scale_y if self._render_texture else 1.0)
+      shift_x, shift_y = self._burn_in_shift() if self._render_texture is None else (0.0, 0.0)
       return rl._orig_begin_scissor_mode(
-        int(x * scale_x), int(y * scale_y),
-        int(math.ceil(width * scale_x)), int(math.ceil(height * scale_y)))
+        int(round((x + shift_x) * scale_x)),
+        int(round((y + shift_y) * scale_y)),
+        int(math.ceil(width * scale_x)),
+        int(math.ceil(height * scale_y)),
+      )
 
-    rl.begin_scissor_mode = _begin_scissor_mode_scaled
+    rl.begin_scissor_mode = _begin_scissor_mode
 
   def _set_log_callback(self):
     ffi_libc = cffi.FFI()
@@ -1282,7 +1318,10 @@ class GuiApplication:
     if fps < self._target_fps * FPS_DROP_THRESHOLD:
       current_time = time.monotonic()
       if current_time - self._last_fps_log_time >= FPS_LOG_INTERVAL:
-        cloudlog.warning(f"FPS dropped below {self._target_fps}: {fps}")
+        timing = self.frame_timing
+        cloudlog.warning(f"FPS dropped below {self._target_fps}: {fps} " +
+                         f"(frame={timing.frame_ms:.1f}ms cpu={timing.cpu_ms:.1f}ms " +
+                         f"draw={timing.draw_ms:.1f}ms update={timing.update_ms:.1f}ms present={timing.present_ms:.1f}ms)")
         self._last_fps_log_time = current_time
 
     # Strict mode: terminate UI if FPS drops too much

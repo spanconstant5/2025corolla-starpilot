@@ -40,6 +40,24 @@ def source(name="Macro Pad"):
   return wheel_controlsd.InputSource("/dev/input/event9", "stable-device", name, 3, 0x1234, 0x5678)
 
 
+def test_screen_off_action_from_favorite_and_controller_changes_only_display_request():
+  from openpilot.starpilot.common.controller_actions import CONTROLLER_ACTION_SCREEN_OFF
+  from openpilot.starpilot.common.favorite_slots import FAVORITE_ACTION_KEYS, execute_favorite_key
+  from openpilot.starpilot.common.screen_settings import SCREEN_OFF_TOGGLE_PARAM
+
+  params = FakeParams({'IsOnroad': True, 'ScreenBrightnessOnroad': 70})
+  memory = FakeParams()
+  assert CONTROLLER_ACTION_SCREEN_OFF in FAVORITE_ACTION_KEYS
+  assert execute_favorite_key(CONTROLLER_ACTION_SCREEN_OFF, params, memory)
+  assert memory.values == {SCREEN_OFF_TOGGLE_PARAM: 1}
+  wheel_controlsd.set_controller_action_slot(0, CONTROLLER_ACTION_SCREEN_OFF, 'Toggle Screen Off', params,
+                                           eligible_keys={CONTROLLER_ACTION_SCREEN_OFF})
+  before = dict(params.values)
+  assert wheel_controlsd.execute_mapping_slot(3, params, memory)
+  assert memory.values == {SCREEN_OFF_TOGGLE_PARAM: 2}
+  assert params.values == before
+
+
 def test_mapping_round_trip_and_reassignment():
   params = FakeParams()
 
@@ -306,6 +324,27 @@ def test_only_key_down_is_dispatched(monkeypatch):
   daemon._read_events(read_fd)
 
   assert triggered == [0]
+  os.close(write_fd)
+  daemon.close()
+
+
+def test_duplicate_key_down_packets_execute_only_once_until_release(monkeypatch):
+  params = FakeParams({"IsOffroad": False})
+  memory = FakeParams()
+  wheel_controlsd.upsert_mapping(source(), 30, 0, params)
+  daemon = wheel_controlsd.WheelControlsDaemon(params, memory)
+  triggered = []
+  monkeypatch.setattr(wheel_controlsd, "execute_favorite_slot", lambda slot, *_args: triggered.append(slot) or True)
+  read_fd, write_fd = os.pipe()
+  os.set_blocking(read_fd, False)
+  daemon.sources[read_fd] = source()
+  daemon.buffers[read_fd] = bytearray()
+
+  for value in (1, 1, 1, 0, 1):
+    os.write(write_fd, wheel_controlsd.INPUT_EVENT.pack(0, 0, wheel_controlsd.EV_KEY, 30, value))
+  daemon._read_events(read_fd)
+
+  assert triggered == [0, 0]
   os.close(write_fd)
   daemon.close()
 

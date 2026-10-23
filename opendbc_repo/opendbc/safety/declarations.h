@@ -339,6 +339,7 @@ extern bool gm_remote_start_boots_comma;
 
 #define ALT_EXP_ALWAYS_ON_LATERAL 32
 #define ALT_EXP_GM_REMAP_CANCEL_TO_DISTANCE 64
+#define ALT_EXP_TOYOTA_AUTO_HOLD 128
 
 extern int alternative_experience;
 
@@ -383,3 +384,4 @@ extern const safety_hooks rivian_hooks;
 extern const safety_hooks psa_hooks;
 extern const safety_hooks volvo_hooks;
 extern const safety_hooks tesla_preap_hooks;
+extern const safety_hooks tesla_legacy_hooks;

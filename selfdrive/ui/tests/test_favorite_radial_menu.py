@@ -77,14 +77,15 @@ def _open_picker(menu, rect, slot_index=0):
   assert menu.state == FavoriteRadialMenu.STATE_PICKER
 
 
-def _menu(clock, options=None):
+def _menu(clock, options=None, cache_render_texture=None):
   params = FakeParams()
   memory = FakeParams()
   options = options or [
     {"key": "FeatureToggle", "label": "Feature Toggle", "description": "The primary test setting.", "section": "Testing"},
     {"key": "OtherToggle", "label": "Other Toggle", "description": "Another test setting.", "section": "Testing"},
   ]
-  return FavoriteRadialMenu(params, memory, lambda: options, clock=lambda: clock[0]), params, memory
+  return FavoriteRadialMenu(params, memory, lambda: options, clock=lambda: clock[0],
+                            cache_render_texture=cache_render_texture), params, memory
 
 
 def test_radial_menu_opens_from_corner_tap_and_arranges_three_slots_on_an_arc():
@@ -114,6 +115,50 @@ def test_corner_hint_keeps_visible_ring_near_content_corner():
   assert center.x - ring_radius == rect.x + edge_margin
   assert rect.y + rect.height - center.y - ring_radius == edge_margin
   assert menu._contains(menu._corner_touch_zone_for(rect), center)
+
+
+def test_corner_hint_caches_idle_and_pressed_art(monkeypatch):
+  clock = [0.0]
+  cached = {}
+  requests = []
+  geometry = []
+  draws = []
+  blend_modes = []
+
+  def cache(key, width, height, render):
+    requests.append((key, width, height, render))
+    return cached.get(key)
+
+  menu, _params, _memory = _menu(clock, cache_render_texture=cache)
+  menu._rect = rl.Rectangle(0, 0, 2160, 1080)
+  monkeypatch.setattr(FavoriteRadialMenu, "_draw_corner_hint_geometry",
+                      staticmethod(lambda *args: geometry.append(args)))
+  monkeypatch.setattr(rl, "draw_texture_pro", lambda *args: draws.append(args))
+  monkeypatch.setattr(rl, "begin_blend_mode", blend_modes.append)
+  monkeypatch.setattr(rl, "end_blend_mode", lambda: None)
+
+  menu._draw_corner_hint()
+  idle_key, width, height, render_idle = requests[-1]
+  assert idle_key == "favorite-corner-hint:150:idle"
+  assert (width, height) == (150, 150)
+  assert geometry == [(1.0, False, 0, 1080)]  # Original drawing remains the cache-miss fallback.
+
+  render_idle()
+  assert geometry[-1] == (1.0, False, 0.0, 150.0)  # Cached art is drawn in local texture coordinates.
+
+  texture = object()
+  cached[idle_key] = texture
+  menu._draw_corner_hint()
+  assert len(geometry) == 2
+  assert draws[-1][0] is texture
+  destination = draws[-1][2]
+  assert (destination.x, destination.y, destination.width, destination.height) == (0, 930, 150, 150)
+  assert blend_modes == [rl.BlendMode.BLEND_ALPHA_PREMULTIPLY]
+
+  menu._corner_press = object()
+  menu._draw_corner_hint()
+  assert requests[-1][0] == "favorite-corner-hint:150:pressed"
+  assert geometry[-1] == (1.0, True, 0, 1080)
 
 
 def test_radial_menu_opens_from_diagonal_inward_swipe_and_auto_collapses_after_six_seconds():
@@ -933,3 +978,53 @@ def test_render_boolean_toggle_switch_and_picker_badges(monkeypatch):
   assert "TOGGLE" in drawn_texts
   assert "2 STATES" in drawn_texts
   assert "ACTION" in drawn_texts
+
+
+
+def test_speed_assignment_requires_new_galaxy_without_disabling_existing_slot():
+  from openpilot.starpilot.common.controller_actions import CONTROLLER_ACTION_SET_SPEED
+
+  speed_option = {"key": CONTROLLER_ACTION_SET_SPEED, "label": "Set Speed To", "value_type": "speed", "default_value": 30}
+  menu, params, _memory = _menu([0.0], options=[speed_option, {"key": "FeatureToggle", "label": "Feature Toggle"}])
+  params.put(FAVORITE_SLOTS_PARAM, [{"enabled": True, "show_onroad": True, "key": "FeatureToggle", "label": "Feature Toggle"}])
+  menu._open_picker(0)
+
+  assert CONTROLLER_ACTION_SET_SPEED in menu._available_option_keys
+  assert [option["key"] for option in menu._picker_options] == ["FeatureToggle"]
+  menu._assign_option(speed_option)
+  assert params.get(FAVORITE_SLOTS_PARAM)[0]["key"] == "FeatureToggle"
+  assert menu.state == FavoriteRadialMenu.STATE_PICKER
+
+
+def test_saved_speed_favorite_retains_value_and_displays_current_unit():
+  from openpilot.starpilot.common.controller_actions import CONTROLLER_ACTION_SET_SPEED
+
+  menu, params, _memory = _menu([0.0], options=[{"key": CONTROLLER_ACTION_SET_SPEED, "label": "Set Speed To", "value_type": "speed"}])
+  params.put(FAVORITE_SLOTS_PARAM, [{"enabled": True, "show_onroad": True, "key": CONTROLLER_ACTION_SET_SPEED, "label": "Set Speed To", "value": 42}])
+  menu._open_radial()
+  for metric, unit in [(False, "mph"), (True, "km/h")]:
+    params.put_bool("IsMetric", metric)
+    menu._layout(rl.Rectangle(0, 0, 2160, 1080))
+    slot = menu._slots[0]
+    assert menu._slot_is_configured(slot)
+    assert slot["value"] == 42
+    assert slot["label"] == f"Set Speed To 42 {unit}"
+  assert params.get(FAVORITE_SLOTS_PARAM)[0]["label"] == "Set Speed To"
+
+
+
+def test_native_saved_speed_favorite_tap_dispatches_configured_value(monkeypatch):
+  from openpilot.starpilot.common.controller_actions import CONTROLLER_ACTION_SET_SPEED
+  from openpilot.starpilot.system.wheel_controls import wheel_controlsd
+
+  menu, params, memory = _menu([0.0], options=[{"key": CONTROLLER_ACTION_SET_SPEED, "label": "Set Speed To", "value_type": "speed"}])
+  slot = {"enabled": True, "show_onroad": True, "key": CONTROLLER_ACTION_SET_SPEED, "label": "Set Speed To", "value": 42}
+  params.put(FAVORITE_SLOTS_PARAM, [slot])
+  dispatched = []
+  monkeypatch.setattr(wheel_controlsd, "execute_controller_key", lambda key, params, memory, **kwargs: dispatched.append((key, kwargs["value"])) or True)
+  rect = rl.Rectangle(0, 0, 2160, 1080)
+  _tap(menu, rect, menu.corner_center(rect))
+  _tap(menu, rect, menu.slot_centers(rect)[0])
+
+  assert dispatched == [(CONTROLLER_ACTION_SET_SPEED, 42)]
+  assert params.get(FAVORITE_SLOTS_PARAM) == [slot]

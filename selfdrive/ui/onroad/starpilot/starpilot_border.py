@@ -11,7 +11,6 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   CEM_OVERRIDE_COLOR, ENGAGED_COLOR, EXPERIMENTAL_COLOR, TRAFFIC_COLOR
 )
-from openpilot.selfdrive.ui.lib.starpilot_visuals import get_border_roundness
 
 
 
@@ -202,13 +201,10 @@ def get_traffic_border_colors() -> tuple[rl.Color, rl.Color] | None:
   flicker_active = (int(rl.get_time() * 1000) % (interval * 2)) < interval
 
   def get_half_border_color(blindspot, turn_signal):
-    if turn_signal and show_signal:
-      if blindspot:
-        return TRAFFIC_COLOR if flicker_active else CEM_OVERRIDE_COLOR
-      else:
-        return CEM_OVERRIDE_COLOR if flicker_active else rl.Color(0, 0, 0, 0)
-    elif blindspot and show_blindspot:
+    if blindspot and show_blindspot:
       return TRAFFIC_COLOR
+    if turn_signal and show_signal:
+      return CEM_OVERRIDE_COLOR if flicker_active else rl.Color(0, 0, 0, 0)
     else:
       return rl.Color(0, 0, 0, 0)
 
@@ -221,7 +217,8 @@ def get_traffic_border_colors() -> tuple[rl.Color, rl.Color] | None:
 def render_background_effects(rect: rl.Rectangle, border_width: float):
   global _smoothed_steer
   sm = ui_state.sm
-  border_roundness = get_border_roundness(rect, border_width)
+  border_rect = rl.Rectangle(rect.x + border_width, rect.y + border_width,
+                             rect.width - 2 * border_width, rect.height - 2 * border_width)
 
   # 1. Turn Signal and Blind Spot indicators
   colors = get_traffic_border_colors()
@@ -229,11 +226,11 @@ def render_background_effects(rect: rl.Rectangle, border_width: float):
     left_color, right_color = colors
     if left_color.a > 0:
       rl.begin_scissor_mode(int(rect.x), int(rect.y), int(rect.width // 2), int(rect.height))
-      rl.draw_rectangle_rounded(rect, border_roundness, 10, left_color)
+      rl.draw_rectangle_rounded_lines_ex(border_rect, 0.12, 10, border_width, left_color)
       rl.end_scissor_mode()
     if right_color.a > 0:
       rl.begin_scissor_mode(int(rect.x + rect.width // 2), int(rect.y), int(rect.width // 2), int(rect.height))
-      rl.draw_rectangle_rounded(rect, border_roundness, 10, right_color)
+      rl.draw_rectangle_rounded_lines_ex(border_rect, 0.12, 10, border_width, right_color)
       rl.end_scissor_mode()
 
   # 2. Steering Torque Border
@@ -266,7 +263,7 @@ def render_background_effects(rect: rl.Rectangle, border_width: float):
         else:
           rl.begin_scissor_mode(int(rect.x + rect.width - border_width), y_pos, int(border_width), int(visible_height))
 
-        rl.draw_rectangle_rounded(rect, border_roundness, 10, col)
+        rl.draw_rectangle_rounded_lines_ex(border_rect, 0.12, 10, border_width, col)
         rl.end_scissor_mode()
 
 

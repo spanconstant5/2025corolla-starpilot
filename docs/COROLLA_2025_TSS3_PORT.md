@@ -1,81 +1,96 @@
-# 2025 Corolla Hybrid TSS 3.0 port
+# 2025 Corolla Hybrid TSS 3.0 signer port
 
-This branch ports the measured Corolla TSS 3.0 `0x160` control path to StarPilot.
-It is based on StarPilot commit `ac3fb6a4d889bb0e43373d602ad80ac349ecb81c`
-and the supplied `Corolla_Fingerprint_v1.zip` artifact (SHA-256
-`247ac13d7fd412418cf052e87c98ef15ef50ca6fc91a2741c5c0e2ed4f955fc6`).
+This branch integrates the RAM-resident request signer for the
+`spanconstant5` 2025 Corolla Hybrid into StarPilot. It is based on StarPilot
+`823a5d5674ec6635b51dd989884dfbd661f90dc4`.
 
-## Evidence carried into this branch
+## Live evidence
 
-- Powertrain is panda bus 1. The relayed ADAS pair is bus 0 and camera bus 2.
-- Camera-origin address `0x160` is a 32-byte CAN FD frame at about 40 Hz.
-- `0x160` acceleration is the signed 15-bit field in bytes 4-5 at
-  `0.001 m/s2/count`.
-- `0x160` steering request is signed big-endian bytes 22-23 at
-  `537.7 counts/degree`.
-- Its keyless AUTOSAR E2E checksum is CRC-16/CCITT over bytes 2-31 plus data ID
-  `0x444A` in little-endian order. Bytes 0-1 contain the little-endian CRC and
-  byte 2 is the camera counter.
-- `0x1A0` is gateway-origin traffic. This branch never transmits it.
+- Exact EPS F181: `8965F1208000 / 8A3111213000`.
+- Resident payload SHA-256:
+  `72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122`.
+- Installer verdict: `request_signer_live_probe_pass`.
+- Request carrier: four classic eight-byte `0x777` frames on Panda bus 0.
+- Response: classic eight-byte `0x7A9` on Panda bus 0, status zero, containing
+  `FV4||MAC28`.
+- The standalone self-test passed.
+- The 100 Hz benchmark sent all 100 requests and received 95 valid responses at
+  94.343 effective responses/second. Median response latency was 9.230 ms,
+  p95 was 18.657 ms, maximum was 25.366 ms, and no more than seven requests
+  were outstanding.
+- Missing signer sequences were 3, 20, 55, 80, and 91. Later responses
+  continued, so the EPS did not stall and the eight-request pipeline did not
+  saturate. The corresponding install log reported `rx_buffer_overflow: 1733`;
+  Panda receive pressure is the leading explanation and remains follow-up work.
 
-The supplied notes report longitudinal validation through route 24, transparent
-lateral relay on route 27, and openpilot steering causation and scale validation
-on route 28. Those route files are not included here, so this repository records
-those as source-artifact claims rather than independently replayed results.
+## Runtime path
 
-The target-specific EPS evidence comes from `kaikozlov/ghidra_rh850` at
-`a747ee291b94ffecbee69cf062aec72b23c4dc8d`: application F181 records
-`8965F1208000` and `8A3111213000`, serial `8965012N50E12H030731`, MCU
-`R7F701383`, and a byte-identical high application region versus the analyzed
-2023 Corolla. This supports transferring the EPS application-code conclusions.
-It does not prove that every vehicle-level CAN signal and calibration is identical.
+At each 100 Hz controller tick, StarPilot constructs the complete 28-byte
+`TSS3_CONTROL_REQUEST` application. Corolla uses the functional-nibble carrier:
 
-## Fail-closed boundaries
+```text
+0x80 | sequence.low_nibble   + application[0:7]
+0x90 | sequence.high_nibble  + application[7:14]
+0xA0 | sequence.low_nibble   + application[14:21]
+0xB0 | sequence.high_nibble  + application[21:28]
+```
 
-- Only the explicitly selected `TOYOTA_COROLLA_TSS3` platform enters this code.
-- The StarPilot vehicle selector supplies the platform because an exact 2025 CAN
-  fingerprint and standard on-bus firmware response set are unresolved.
-- Panda accepts only a 32-byte `0x160` on bus 0 in TSS3 mode. Legacy 8-byte
-  `0x160`, `0x1A0`, Toyota LKA/LTA messages, and other command addresses remain
-  outside the allowlist.
-- TSS3 Panda mode is compiled only with `ALLOW_DEBUG`. A production safety build
-  does not activate the experimental allowlist and therefore rejects the
-  controller's `0x160` output.
-- Acceleration is limited to the stock relay envelope of `-3.5..2.0 m/s2` in
-  Panda; StarPilot's substituted request is additionally clamped to
-  `-1.5..1.5 m/s2`.
-- Steering changes are capped at 1,500 counts per accepted frame. A rejected
-  frame does not advance the rate-limit baseline.
-- The controller emits once per new camera counter and preserves every unknown
-  camera field. When it is not controlling an axis, it relays that axis's field.
+The EPS returns a sequence-matched `0x7A9` response. StarPilot appends its
+four-byte security trailer to the original application and publishes the
+signed 32-byte `0x08A` on bus 0.
 
-## Unresolved behavior
+The transport supports up to eight pending generations and uses a 90 ms
+publication deadline. When a later response arrives after an older response
+was dropped, the older request is marked superseded so it cannot stall the
+queue or replay stale actuator state. Disable, CAN invalidity, explicit signer
+failure, or watchdog expiry releases host ownership.
 
-- The turn signal is absent from the three tapped buses, so the controller cannot
-  pause steering from a reliable blinker signal.
-- The Toyota hands-on-wheel warning appears torque-timeout enforced; no
-  suppressible CAN bit was established. Hands-on operation remains required.
-- The four fields in message `0xDA` have not been assigned reliably to driver and
-  EPS torque, so `steeringPressed` remains false rather than guessing.
-- Exact 2025 vehicle mass, steering tuning, automatic CAN fingerprint, and
-  standard diagnostic firmware-query mapping remain unresolved.
-- The reported route-24 and route-28 control logs were not part of the archive
-  or later rlog supply, so this port has not been independently replay-tested
-  against those control sessions.
+The live known-answer inactive application and carrier are:
 
-## Supplied CAN census
+```text
+application: 0000000880002d4700000000007fff007fff0000c000100032000100
+frames:
+  810000000880002d
+  904700000000007f
+  a1ff007fff0000c0
+  b000100032000100
+```
 
-Two later user-supplied rlogs were processed offline. The segment-10 raw file is
-byte-identical to the decompressed rlog already pinned by `ghidra_rh850` (raw
-SHA-256 `98710e8d23a40796718b7be566efc83a569be90ece59b5d7f70377143e38338b`).
-Its logical bus 1 contains the tracked 147 address/DLC pairs. The additional
-startup rlog expands the union to 152 pairs; processing the segment-10 rlog
-second adds no new address. Logical bus 0 contains the stable 22-message ADAS
-CAN FD geometry.
+## Safety boundaries
 
-The 152-entry union is retained in
-`opendbc/car/toyota/tss3_census.py` for parser and review evidence. It is not in
-`FINGERPRINTS`: the evidence authority records the Corolla census as overlapping
-a TSS3 Camry census, and the moving rlog contains `carParams=MOCK` rather than an
-on-route F181 response. Automatic matching would therefore risk an ambiguous or
-wrong vehicle identity. Manual StarPilot selection remains the supported path.
+- Only manually selected `TOYOTA_COROLLA_TSS3` enters this path.
+- Longitudinal is disabled. Both acceleration fields in host `0x08A` must be
+  zero.
+- Panda admits only signer admin and the functional-nibble `0x777` carrier on
+  bus 0, plus signed 32-byte `0x08A` on bus 0.
+- Panda validates the fixed application envelope, lateral request ID/gain pair,
+  active-control state, and requested angle.
+- The requested steering-wheel angle is limited to 55 degrees. Safety uses the
+  US-sedan E210 2.70 m wheelbase and 13.9 steering ratio with a conservative
+  zero-slip model.
+- Native `0x08A` forwarding is blocked only while host replacement is active.
+  It fails open after 100 ms without a well-shaped host publication.
+- The safety mode is available only in builds compiled with `ALLOW_DEBUG`.
+  Production Panda builds reject the experimental path.
+- The superseded direct camera-`0x160` and gateway-`0x1A0` paths are not in
+  the signer-mode transmit allowlist.
+
+## Remaining vehicle work
+
+- Road-qualify this exact StarPilot integration while stationary first, then
+  under controlled driving conditions.
+- Reduce or explain Panda RX-buffer overflow and repeat a longer sustained-rate
+  benchmark.
+- Dynamically validate the 2025 steering calibration and driver-override
+  threshold rather than relying indefinitely on inherited E210 geometry.
+- Complete an unambiguous fingerprint and standard firmware-query mapping.
+- Keep hands-on operation: no verified suppression exists for Toyota's
+  torque-timeout warning.
+
+Manual vehicle selection remains required because the retained census overlaps
+other TSS3 evidence and does not uniquely bind the moving logs to this F181.
+
+The earlier `Corolla_Fingerprint_v1.zip` package is from a 2023 US-built,
+non-hybrid Corolla SE. It is used as corroborating E210-sedan geometry and CAN
+topology evidence only. Its superseded camera-`0x160` control path and bus
+assignments do not override the live 2025 Hybrid signer observations.

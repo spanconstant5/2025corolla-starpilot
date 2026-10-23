@@ -26,6 +26,33 @@ ENABLE_BUTTONS = (Buttons.RES_ACCEL, Buttons.SET_DECEL, Buttons.CANCEL)
 BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: ButtonType.decelCruise,
                 Buttons.GAP_DIST: ButtonType.gapAdjustCruise, Buttons.CANCEL: ButtonType.cancel}
 
+
+class Ev6AolArmingState:
+  def __init__(self, lkas_on_engage: bool):
+    self.lkas_on_engage = lkas_on_engage
+    self.main_on = False
+    self.lkas_on = False
+    self.prev_main_button = False
+    self.prev_lkas_button = False
+    self.prev_cruise_button = Buttons.NONE
+
+  def update(self, main_button: bool, lkas_button: bool, cruise_button: int):
+    if main_button and not self.prev_main_button:
+      self.main_on = not self.main_on
+    if lkas_button and not self.prev_lkas_button:
+      self.lkas_on = not self.lkas_on
+    if (self.lkas_on_engage and cruise_button != self.prev_cruise_button and
+        self.prev_cruise_button in (Buttons.SET_DECEL, Buttons.RES_ACCEL)):
+      self.lkas_on = True
+    self.prev_main_button = main_button
+    self.prev_lkas_button = lkas_button
+    self.prev_cruise_button = cruise_button
+
+  @property
+  def authorized(self) -> bool:
+    return self.main_on or self.lkas_on
+
+
 IONIQ_6_BLINDSPOT_RIGHT_MASK = 0x08
 IONIQ_6_BLINDSPOT_LEFT_MASK = 0x10
 CANFD_CAMERA_LEAD_MIN_DISTANCE = 0.1
@@ -138,6 +165,16 @@ class CarState(CarStateBase):
     self.buttons_counter = 0
     self.main_cruise_on = False
     self.main_cruise_tracking = bool(getattr(FPCP, "flags", 0) & HyundaiStarPilotFlags.MAIN_CRUISE_STATE_TRACKING)
+    self.ev6_aol_arming = None
+    if CP.carFingerprint == CAR.KIA_EV6 and CP.openpilotLongitudinalControl and not CP.pcmCruise:
+      lkas_on_engage = any(
+        config.safetyParam & HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE
+        for config in (*CP.safetyConfigs, *FPCP.safetyConfigs)
+      )
+      self.ev6_aol_arming = Ev6AolArmingState(lkas_on_engage)
+    if CP.carFingerprint == CAR.KIA_RAY_EV:
+      self.ray_pedal_state = 5
+      self.ray_pedal_valid = False
 
     self.cruise_info = {}
     self.msg_161 = {}
@@ -177,6 +214,10 @@ class CarState(CarStateBase):
     # To avoid re-engaging when openpilot cancels, check user engagement intention via buttons
     # Main button also can trigger an engagement on these cars
     return any(btn in ENABLE_BUTTONS for btn in self.cruise_buttons) or any(self.main_buttons)
+
+  @property
+  def ev6_aol_authorized(self) -> bool:
+    return self.ev6_aol_arming is not None and self.ev6_aol_arming.authorized
 
   def update_main_cruise(self, ret: structs.CarState,
                          button_events: list[structs.CarState.ButtonEvent] | None = None) -> bool:
@@ -300,6 +341,7 @@ class CarState(CarStateBase):
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
     cp_alt = can_parsers.get(Bus.alt)
+    cp_pedal = can_parsers.get(Bus.party)
 
     if self.CP.flags & HyundaiFlags.CANFD:
       return self.update_canfd(can_parsers)
@@ -393,6 +435,11 @@ class CarState(CarStateBase):
     ret.espDisabled = cp.vl["TCS11"]["TCS_PAS"] == 1
     ret.espActive = cp.vl["TCS11"]["ABS_ACT"] == 1
     ret.accFaulted = False if no_scc else cp.vl["TCS13"]["ACCEnable"] != 0  # 0 ACC CONTROL ENABLED, 1-3 ACC CONTROL DISABLED
+    if self.CP.carFingerprint == CAR.KIA_RAY_EV and self.CP.enableGasInterceptorDEPRECATED:
+      self.ray_pedal_valid = bool(cp_pedal is not None and cp_pedal.can_valid and
+                                  cp_pedal.ts_nanos["GAS_SENSOR"]["STATE"] > 0)
+      self.ray_pedal_state = int(cp_pedal.vl["GAS_SENSOR"]["STATE"]) if cp_pedal is not None else 5
+      ret.accFaulted = not self.ray_pedal_valid or self.ray_pedal_state != 0
 
     if self.CP.flags & (HyundaiFlags.HYBRID | HyundaiFlags.EV | HyundaiFlags.FCEV):
       if self.CP.flags & HyundaiFlags.FCEV:
@@ -403,6 +450,12 @@ class CarState(CarStateBase):
         ret.gasPressed = cp.vl["E_EMS11"]["Accel_Pedal_Pos"] > 0
     else:
       ret.gasPressed = bool(cp.vl["EMS16"]["CF_Ems_AclAct"])
+
+    if self.CP.carFingerprint == CAR.KIA_RAY_EV and self.CP.enableGasInterceptorDEPRECATED and self.ray_pedal_valid:
+      driver_pedal = cp_pedal.vl_raw["GAS_SENSOR"]
+      track1 = int.from_bytes(driver_pedal[:2], "big")
+      track2 = int.from_bytes(driver_pedal[2:4], "big")
+      ret.gasPressed = track1 > 272 or track2 > 513
 
     # Gear Selection via Cluster - For those Kia/Hyundai which are not fully discovered, we can use the Cluster Indicator for Gear Selection,
     # as this seems to be standard over all cars, but is not the preferred method.
@@ -625,6 +678,13 @@ class CarState(CarStateBase):
                         *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise}),
                         *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas}),
                         *create_button_events(self.left_paddle, prev_left_paddle, {1: ButtonType.altButton2})]
+    if self.ev6_aol_arming is not None:
+      buttons = cp.vl_all[self.cruise_btns_msg_canfd]
+      for main, lkas, cruise in zip(buttons["ADAPTIVE_CRUISE_MAIN_BTN"], buttons["LDA_BTN"], buttons["CRUISE_BUTTONS"], strict=True):
+        self.ev6_aol_arming.update(bool(main), bool(lkas), int(cruise))
+      if not ret.cruiseState.available:
+        self.ev6_aol_arming.main_on = False
+
     if self.CP.openpilotLongitudinalControl and (self.CP.carFingerprint == CAR.KIA_EV9 or self.main_cruise_tracking):
       ret.cruiseState.available = self.update_main_cruise(ret)
 
@@ -748,4 +808,6 @@ class CarState(CarStateBase):
     }
     if CP.carFingerprint in ALT_BUS_LDA_BUTTON_CARS:
       parsers[Bus.alt] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CLU13", 0)], 1)
+    if CP.carFingerprint == CAR.KIA_RAY_EV and CP.enableGasInterceptorDEPRECATED:
+      parsers[Bus.party] = CANParser("hyundai_kia_ray_pedal", [("GAS_SENSOR", 50)], 0)
     return parsers

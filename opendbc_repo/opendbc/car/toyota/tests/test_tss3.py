@@ -1,5 +1,40 @@
+from opendbc.can import CANPacker
+from opendbc.car import structs
 from opendbc.car.toyota.e2e import apply_e2e_160, e2e_160_valid
+from opendbc.car.toyota.interface import CarInterface
 from opendbc.car.toyota.toyotacan import modify_tss3_160
+from opendbc.car.toyota.tss3 import COROLLA_ORACLE_PROFILE, build_host_application, build_oracle_transport
+from opendbc.car.toyota.values import CAR, ToyotaSafetyFlags
+
+
+def test_corolla_params_select_live_signer_transport():
+  cp = CarInterface.get_non_essential_params(CAR.TOYOTA_COROLLA_TSS3)
+  assert not cp.dashcamOnly
+  assert not cp.openpilotLongitudinalControl
+  assert cp.safetyConfigs[0].safetyModel == structs.CarParams.SafetyModel.toyota
+  assert cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_SIGNER
+  assert cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_08A_HOST
+  assert cp.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.TSS3_COROLLA_SIGNER
+
+
+def test_corolla_inactive_application_matches_live_known_answer():
+  packer = CANPacker("toyota_tss3_pt_generated")
+  application = build_host_application(
+    packer,
+    lat_active=False,
+    target_angle_raw=0,
+    long_active=False,
+    accel=0.0,
+    set_speed_kph=0.0,
+    request_sequence=1,
+  )
+  assert application.hex() == "0000000880002d4700000000007fff007fff0000c000100032000100"
+  assert [msg.dat.hex() for msg in build_oracle_transport(1, application, COROLLA_ORACLE_PROFILE)] == [
+    "810000000880002d",
+    "904700000000007f",
+    "a1ff007fff0000c0",
+    "b000100032000100",
+  ]
 
 
 def test_e2e_rejects_wrong_size():

@@ -16,12 +16,12 @@ from cereal import car, custom, log
 from opendbc.car import gen_empty_fingerprint
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.chrysler.values import JEEPS as CHRYSLER_JEEPS
-from opendbc.car.gm.values import CAR as GM_CAR, EV_CAR as GM_EV_CAR, GMFlags
+from opendbc.car.gm.values import CAR as GM_CAR, EV_CAR as GM_EV_CAR, GM_AUTO_HOLD_CARS, GMFlags
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, EV_CAR as HYUNDAI_EV_CAR, HyundaiFlags, HyundaiStarPilotSafetyFlags
 from opendbc.car.interfaces import TORQUE_SUBSTITUTE_PATH, CarInterfaceBase, GearShifter
 from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.subaru.values import SUBARU_REDNECK_CRUISE_CARS, SUBARU_STOP_START_CARS, SubaruFlags
-from opendbc.car.tesla.values import CAR as TESLA_CAR
+from opendbc.car.tesla.values import CAR as TESLA_CAR, TeslaFlags
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR, ToyotaStarPilotFlags
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.constants import CV
@@ -31,6 +31,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
 from openpilot.starpilot.common.lateral_only_experimental import lateral_only_experimental_available
+from openpilot.starpilot.common.longitudinal_mode import read_mode_values
 from openpilot.starpilot.common.accel_profile import (
   ACCELERATION_PROFILES,
   A_CRUISE_MAX_BP_CUSTOM,
@@ -48,6 +49,12 @@ from openpilot.starpilot.common.accel_profile import (
   normalize_acceleration_profile,
   normalize_deceleration_profile,
   parse_custom_accel_profile_curve,
+)
+from openpilot.starpilot.common.longitudinal_personality_profiles import (
+  PERSONALITY_PROFILES_PARAM,
+  is_truck_fingerprint,
+  load_personality_profile_enable_values,
+  migrate_profile_document,
 )
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.hw import Paths
@@ -191,6 +198,7 @@ CANCEL_BUTTON_MAPPINGS = (
 
 AOL_LKAS_MIGRATION_KEY = "AOLLKASMigratedToButtonControl"
 FORD_LKAS_MIGRATION_KEY = "FordLKASButtonControlMigrated"
+SONATA_HYBRID_LKAS_MIGRATION_KEY = "SonataHybridLKASButtonControlMigrated"
 
 
 def sync_reboot_marker(marker_path: Path, enabled: bool, params: Params) -> bool:
@@ -436,6 +444,18 @@ def migrate_ford_lkas_button_default(car_make: str, params: Params | None = None
   return True
 
 
+def migrate_sonata_hybrid_lkas_button_default(car_model: str, params: Params | None = None) -> bool:
+  params = params or Params(return_defaults=True)
+  if car_model != HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID or params.get_bool(SONATA_HYBRID_LKAS_MIGRATION_KEY):
+    return False
+
+  if params.get_int("LKASButtonControl") == BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]:
+    params.put_int("LKASButtonControl", BUTTON_FUNCTIONS["AOL_TOGGLE"])
+
+  params.put_bool(SONATA_HYBRID_LKAS_MIGRATION_KEY, True)
+  return True
+
+
 class StarPilotVariables:
   def __init__(self):
     self.params = Params(return_defaults=True)
@@ -617,9 +637,20 @@ class StarPilotVariables:
 
   def update(self, holiday_theme="stock", started=False, clear_update_flag=True):
     toggle = self.starpilot_toggles
+    try:
+      mode_values = read_mode_values(self.params)
+    except OSError:
+      self.params_memory.put_bool("StarPilotTogglesUpdated", True)
+      if hasattr(toggle, "longitudinal_mode_values"):
+        return
+      mode_values = {"ExperimentalMode": False, "ConditionalChill": False, "ConditionalExperimental": False}
+      clear_update_flag = False
     # CarParams uses this value to select the matching Panda safety configuration.
     toggle.tesla_cooperative_steering = self.params.get_bool("TeslaCoopSteering")
+    toggle.tesla_aol_screen_tap_requested = self.params.get_bool("TeslaAOLScreenTap") and self.params.get_bool("AlwaysOnLateral")
+    toggle.tesla_aol_screen_brake_disengage_requested = self.params.get_bool("TeslaAOLDisengageOnBrake")
     toggle.rivian_angle_control = self.params.get_bool("RivianAngleControl")
+    toggle.toyota_radar_mode_requested = self.params.get_int("ToyotaRadarMode")
 
     fallback_platform = GM_CAR.CHEVROLET_BOLT_ACC_2022_2023 if HARDWARE.get_device_type() == "pc" else MOCK.MOCK
 
@@ -647,6 +678,7 @@ class StarPilotVariables:
     toggle.car_make = CP.brand
     migrate_ford_lkas_button_default(toggle.car_make, self.params)
     toggle.car_model = CP.carFingerprint
+    migrate_sonata_hybrid_lkas_button_default(toggle.car_model, self.params)
     toggle.disable_openpilot_long = self.get_value("DisableOpenpilotLongitudinal", condition=not alpha_longitudinal)
     friction = CP.lateralTuning.torque.friction
     if not math.isfinite(friction):
@@ -806,6 +838,10 @@ class StarPilotVariables:
     # Seed powertrain-based defaults once, but always honor persisted user overrides.
     toggle.ev_tuning = ev_tuning_param
     toggle.truck_tuning = truck_tuning_param
+    toggle.personality_ev_tuning = bool(ev_vehicle)
+    toggle.personality_truck_tuning = (
+      is_truck_fingerprint(CP.carFingerprint) or truck_tuning_param
+    ) and not toggle.personality_ev_tuning
     toggle.trailer_load_kg = self.get_value("TrailerLoad", cast=float, condition=advanced_longitudinal_tuning,
                                             default=0.0, conversion=CV.LB_TO_KG, min=0, max=15000 * CV.LB_TO_KG)
     toggle.longitudinalActuatorDelay = self.get_value("LongitudinalActuatorDelay", cast=float, condition=advanced_longitudinal_tuning, default=longitudinalActuatorDelay, min=0, max=1)
@@ -843,6 +879,13 @@ class StarPilotVariables:
     )
     toggle.always_on_lateral_main = toggle.always_on_lateral and not prohibited_main_aol
     toggle.always_on_lateral_pause_speed = self.get_value("PauseAOLOnBrake", cast=float, condition=toggle.always_on_lateral)
+    toggle.tesla_aol_disengage_on_brake = self.get_value(
+      "TeslaAOLDisengageOnBrake", condition=toggle.always_on_lateral and toggle.car_make == "tesla"
+    )
+    toggle.tesla_aol_screen_tap = self.get_value(
+      "TeslaAOLScreenTap", condition=toggle.always_on_lateral and toggle.car_make == "tesla" and
+      toggle.car_model in (TESLA_CAR.TESLA_MODEL_3, TESLA_CAR.TESLA_MODEL_Y) and bool(CP.flags & TeslaFlags.AOL_SCREEN_BUTTON),
+    )
 
     main_cruise_button_control = self.get_button_function("MainCruiseButtonControl")
     toggle.main_cruise_aol_toggle = _main_cruise_aol_allowed(main_cruise_button_control)
@@ -861,10 +904,12 @@ class StarPilotVariables:
       toggle.car_model = car_model
 
     self.migrate_prius_cluster_offset(str(toggle.car_model))
-    toggle.cluster_offset = self.get_value("ClusterOffset", cast=float, condition=toggle.car_make == "toyota")
+    toggle.cluster_offset = self.get_value("ClusterOffset", cast=float)
 
-    toggle.conditional_experimental_mode = toggle.openpilot_longitudinal and self.get_value("ConditionalExperimental")
-    toggle.conditional_chill_mode = toggle.openpilot_longitudinal and not toggle.conditional_experimental_mode and self.get_value("ConditionalChill")
+    toggle.longitudinal_mode_values = mode_values
+    toggle.experimental_mode = toggle.experimental_mode_available and not toggle.safe_mode and mode_values["ExperimentalMode"]
+    toggle.conditional_experimental_mode = toggle.openpilot_longitudinal and not toggle.safe_mode and mode_values["ConditionalExperimental"]
+    toggle.conditional_chill_mode = toggle.openpilot_longitudinal and not toggle.safe_mode and not toggle.conditional_experimental_mode and mode_values["ConditionalChill"]
     toggle.conditional_curves = self.get_value("CECurves", condition=toggle.conditional_experimental_mode)
     toggle.conditional_curves_lead = self.get_value("CECurvesLead", condition=toggle.conditional_curves)
     toggle.conditional_lead = self.get_value("CELead", condition=toggle.conditional_experimental_mode)
@@ -901,6 +946,10 @@ class StarPilotVariables:
     toggle.speed_limit_changed_alert = self.get_value("SpeedLimitChangedAlert")
 
     toggle.custom_personalities = toggle.openpilot_longitudinal and self.get_value("CustomPersonalities")
+    for runtime_key, enabled in load_personality_profile_enable_values(self.get_value).items():
+      setattr(toggle, runtime_key, enabled)
+    profile_settings_raw = self.params_raw.get(PERSONALITY_PROFILES_PARAM)
+    toggle.longitudinal_personality_profiles = migrate_profile_document(profile_settings_raw) or {}
     toggle.aggressive_jerk_acceleration = self.get_value("AggressiveJerkAcceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_deceleration = self.get_value("AggressiveJerkDeceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_danger = self.get_value("AggressiveJerkDanger", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
@@ -964,7 +1013,8 @@ class StarPilotVariables:
     toggle.static_pedals_on_ui = self.get_value("StaticPedalsOnUI", condition=toggle.pedals_on_ui)
     toggle.rotating_wheel = self.get_value("RotatingWheel", condition=custom_ui)
 
-    toggle.developer_ui = self.get_value("DeveloperUI")
+    big_ui = os.getenv("BIG", "0") == "1" or HARDWARE.get_device_type() in ("tici", "tizi")
+    toggle.developer_ui = self.get_value("DeveloperUI") or big_ui
     developer_metrics = self.get_value("DeveloperMetrics", condition=toggle.developer_ui)
     border_metrics = self.get_value("BorderMetrics", condition=developer_metrics)
     toggle.blind_spot_metrics = has_bsm and self.get_value("BlindSpotMetrics", condition=border_metrics)
@@ -1004,6 +1054,7 @@ class StarPilotVariables:
     )
     toggle.device_shutdown_time = device_shutdown_seconds(device_shutdown_hours)
     toggle.increase_thermal_limits = self.get_value("IncreaseThermalLimits", condition=device_management)
+    toggle.aggressive_cooling = self.get_value("AggressiveCoolingEnabled", condition=device_management)
     toggle.low_voltage_shutdown = self.get_value("LowVoltageShutdown", cast=float, condition=device_management, min=VBATT_PAUSE_CHARGING, max=12.5)
     # Keep force-onroad desktop simulations from polluting logs, but never disable
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
@@ -1017,7 +1068,7 @@ class StarPilotVariables:
       condition=toggle.car_make == "gm" and toggle.has_pedal and "BOLT" in toggle.car_model,
     )
 
-    developer_feature_access = self.params.get_bool("DeveloperUI") or self.params.get_bool("GalaxyDeveloperMode")
+    developer_feature_access = toggle.developer_ui or self.params.get_bool("GalaxyDeveloperMode")
     toggle.pulse_and_glide_available = toggle.openpilot_longitudinal and developer_feature_access
     toggle.pulse_glide_speed_delta = self.get_value(
       "PulseGlideSpeedDelta",
@@ -1406,7 +1457,7 @@ class StarPilotVariables:
 
     screen_management = self.get_value("ScreenManagement")
     toggle.screen_brightness = max(self.get_value("ScreenBrightness", cast=float, condition=screen_management), 1)
-    toggle.screen_brightness_onroad = self.get_value("ScreenBrightnessOnroad", cast=float, condition=(screen_management and not toggle.force_onroad), min=1)
+    toggle.screen_brightness_onroad = self.get_value("ScreenBrightnessOnroad", cast=float, condition=(screen_management and not toggle.force_onroad), min=0)
     toggle.screen_recorder = self.get_value("ScreenRecorder", condition=screen_management) or toggle.debug_mode
     toggle.screen_timeout = self.get_value("ScreenTimeout", cast=float, condition=screen_management)
     toggle.screen_timeout_onroad = self.get_value("ScreenTimeoutOnroad", cast=float, condition=screen_management)
@@ -1431,6 +1482,8 @@ class StarPilotVariables:
     speed_limit_confirmation = self.get_value("SLCConfirmation", condition=toggle.speed_limit_controller)
     toggle.speed_limit_confirmation_higher = self.get_value("SLCConfirmationHigher", condition=speed_limit_confirmation)
     toggle.speed_limit_confirmation_lower = self.get_value("SLCConfirmationLower", condition=speed_limit_confirmation)
+    # Legacy setting is hidden in the current UI. SLC's pedal and +/- overrides
+    # remain available regardless of its saved value; keep loading it for compatibility.
     slc_override_method = self.get_value("SLCOverride", cast=float, condition=toggle.speed_limit_controller)
     toggle.speed_limit_controller_override_manual = slc_override_method == 1
     toggle.speed_limit_controller_override_set_speed = slc_override_method == 2
@@ -1467,8 +1520,6 @@ class StarPilotVariables:
     toggle.startup_alert_bottom = self.get_value("StartupMessageBottom", cast=str, default="")
 
     if toggle.simple_mode:
-      toggle.alert_volume_controller = False
-
       toggle.color_scheme = "stock"
       toggle.current_holiday_theme = "stock"
       toggle.holiday_themes = False
@@ -1564,6 +1615,7 @@ class StarPilotVariables:
     toggle.subaru_stop_start_off = self.get_value(
       "SubaruStopStartOff", condition=toggle.car_model in SUBARU_STOP_START_CARS,
     )
+    toggle.subaru_avh_on = self.get_value("SubaruAvhStartup", condition=toggle.car_model == "SUBARU_LEGACY_2025")
     toggle.jeep_brake_hold = self.get_value(
       "JeepBrakeHold",
       condition=toggle.car_make == "chrysler" and toggle.car_model in CHRYSLER_JEEPS,
@@ -1572,6 +1624,10 @@ class StarPilotVariables:
     toggle.tesla_cooperative_steering = self.get_value(
       "TeslaCoopSteering",
       condition=toggle.car_make == "tesla" and toggle.car_model == TESLA_CAR.TESLA_MODEL_3,
+    )
+    toggle.tesla_wake_on_can = self.get_value(
+      "TeslaWakeOnCAN",
+      condition=toggle.car_make == "tesla" and toggle.car_model in {TESLA_CAR.TESLA_MODEL_3, TESLA_CAR.TESLA_MODEL_Y, TESLA_CAR.TESLA_MODEL_X},
     )
     toggle.rivian_angle_control = self.get_value("RivianAngleControl", condition=toggle.car_make == "rivian")
 
@@ -1600,9 +1656,9 @@ class StarPilotVariables:
     )
     toggle.remote_start_boots_comma = self.get_value("RemoteStartBootsComma", condition=toggle.car_make == "gm")
 
-    gm_auto_hold_supported = toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS
+    gm_auto_hold_supported = toggle.car_model in GM_AUTO_HOLD_CARS
     toggle.gm_auto_hold = self.get_value("GMAutoHold", condition=gm_auto_hold_supported)
-    toggle.volt_one_pedal_mode = self.get_value("VoltOnePedalMode", condition=gm_auto_hold_supported)
+    toggle.volt_one_pedal_mode = self.get_value("VoltOnePedalMode", condition=toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS)
 
     toggle.volt_sng = self.get_value("VoltSNG", condition=toggle.car_model in LEGACY_VOLT_STOCK_ACC_CARS)
 

@@ -57,11 +57,11 @@ class ToyotaSafetyFlags(IntFlag):
   LTA = (4 << 8)
   SECOC = (8 << 8)
   LONG_FILTER = (16 << 8)
+  TSS3_SIGNER = (16 << 8)
   GAS_INTERCEPTOR = (32 << 8)
   ALT_CRUISE = (64 << 8)
-  # TSS 3.0 Corolla CAN FD receive/tx set. Kept separate from the generic
-  # SECOC and LTA flags because this platform's command is the 32-byte 0x160.
-  TSS3 = (128 << 8)
+  TSS3_08A_HOST = (64 << 8)
+  TSS3_COROLLA_SIGNER = (128 << 8)
 
 
 class ToyotaFlags(IntFlag):
@@ -70,6 +70,8 @@ class ToyotaFlags(IntFlag):
   DISABLE_RADAR = 4
   # The DSU's ACC messages are rerouted through the camera bus by an adapter.
   DSU_BYPASS = 8192
+  ARS510_RADAR = 16384
+  ARS510_FUSED = 32768
 
   # Static flags
   TSS2 = 8
@@ -143,8 +145,8 @@ class ToyotaSecOCPlatformConfig(PlatformConfig):
 
 @dataclass
 class ToyotaCanFDSecOCPlatformConfig(PlatformConfig):
-  """TSS 3.0 CAN FD platform with a dedicated 32-byte powertrain DBC."""
-  dbc_dict: dict = field(default_factory=lambda: {Bus.pt: 'toyota_corolla_tss3_pt'})
+  """TSS 3.0 CAN FD platform using the shared request/result DBC."""
+  dbc_dict: dict = field(default_factory=lambda: {Bus.pt: 'toyota_tss3_pt_generated'})
 
   def init(self):
     self.flags |= (ToyotaFlags.HYBRID | ToyotaFlags.TSS2 | ToyotaFlags.NO_DSU |
@@ -242,9 +244,10 @@ class CAR(Platforms):
   )
   TOYOTA_COROLLA_TSS3 = ToyotaCanFDSecOCPlatformConfig(
     [ToyotaCommunityCarDocs("Toyota Corolla Hybrid 2025 (TSS 3.0)", min_enable_speed=MIN_ACC_SPEED)],
-    # The control geometry is inherited from the validated 2023 E210 port.
-    # Target-specific mass and steering calibration remain unresolved.
-    CarSpecs(mass=3060. * CV.LB_TO_KG, wheelbase=2.67, steerRatio=13.9, tireStiffnessFactor=0.444),
+    # The 2023 US-built Corolla SE evidence and the 2025 Hybrid target are E210
+    # sedans with a 2.70 m wheelbase. The 13.9 ratio remains the best Corolla
+    # reference and still needs direct validation on the target car.
+    CarSpecs(mass=3060. * CV.LB_TO_KG, wheelbase=2.70, steerRatio=13.9, tireStiffnessFactor=0.444),
   )
   TOYOTA_HIGHLANDER = PlatformConfig(
     [
@@ -640,6 +643,7 @@ UNSUPPORTED_DSU_CAR = CAR.with_flags(ToyotaFlags.UNSUPPORTED_DSU)
 
 # these cars have a radar which sends ACC messages instead of the camera
 RADAR_ACC_CAR = CAR.with_flags(ToyotaFlags.RADAR_ACC)
+ARS510_RADAR_CAR = {CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_RAV4_TSS2_2023}
 
 ANGLE_CONTROL_CAR = CAR.with_flags(ToyotaFlags.ANGLE_CONTROL)
 
@@ -649,6 +653,16 @@ TOYOTA_AUTO_HOLD_CARS = (TSS2_CAR - RADAR_ACC_CAR - SECOC_CAR) | {
   CAR.TOYOTA_RAV4,
   CAR.TOYOTA_RAV4H,
 }
+
+# The Camry uses the legacy camera AEB replacement for Auto Hold. The
+# 2019-2021 RAV4 uses it only with the detected hybrid powertrain.
+TOYOTA_AUTO_HOLD_AEB_CARS = {CAR.TOYOTA_CAMRY_TSS2}
+
+
+def uses_toyota_auto_hold_aeb(CP: CarParams) -> bool:
+  return (CP.carFingerprint in TOYOTA_AUTO_HOLD_AEB_CARS or
+          (CP.carFingerprint == CAR.TOYOTA_RAV4_TSS2 and bool(CP.flags & ToyotaFlags.HYBRID.value)))
+
 
 # no resume button press required
 NO_STOP_TIMER_CAR = CAR.with_flags(ToyotaFlags.NO_STOP_TIMER)
@@ -673,6 +687,6 @@ TSS3_LAT_MODE = TSS3LatMode.LIVE
 TSS3_LAT_RELAY_ONLY = False
 TSS3_MAX_STEER_ANGLE = 55.0
 TSS3_MIN_OVERRIDE_SPEED = 0.45
-TSS3_PT_BUS = 1
+TSS3_STEER_DRIVER_TORQUE_THRESHOLD = 0.6
 
 DBC = CAR.create_dbc_map()

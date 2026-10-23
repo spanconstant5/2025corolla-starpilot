@@ -1,8 +1,10 @@
 import numpy as np
 
 from opendbc.car.gm.values import CAR, GMFlags
+from opendbc.car.ford.values import CAR as FORD_CAR
 from opendbc.car.subaru.values import CAR as SUBARU_CAR
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
+from opendbc.car.volkswagen.values import CAR as VOLKSWAGEN_CAR
 from openpilot.common.realtime import DT_CTRL
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
@@ -45,6 +47,9 @@ TOYOTA_COROLLA_TARGET_FILTER_UP_TAU = 0.30
 TOYOTA_COROLLA_TARGET_FILTER_DOWN_TAU = 0.18
 TOYOTA_COROLLA_TARGET_FILTER_BRAKE_BYPASS = -0.75
 TOYOTA_COROLLA_TARGET_FILTER_DROP_BYPASS = 0.45
+TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_EGO_SPEED = 0.5
+TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_DISTANCE = 8.0
+TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_SPEED = 0.35
 VOLT_CRUISE_INTEGRATOR_MIN_SPEED = 8.0
 VOLT_CRUISE_INTEGRATOR_TARGET_MAX = 0.12
 VOLT_CRUISE_INTEGRATOR_ERROR_MAX = 0.12
@@ -63,6 +68,15 @@ HYUNDAI_ELANTRA_FINAL_STOP_URGENCY_MARGIN = 0.45
 HYUNDAI_SANTA_FE_FINAL_STOP_MAX_SPEED = 1.0
 HYUNDAI_SANTA_FE_FINAL_STOP_CAP_BP = [0.0, 0.2, 0.5, HYUNDAI_SANTA_FE_FINAL_STOP_MAX_SPEED]
 HYUNDAI_SANTA_FE_FINAL_STOP_CAP_V = [-0.25, -0.30, -0.50, -0.90]
+VOLKSWAGEN_TAOS_COMFORT_STOP_MAX_SPEED = 4.5
+VOLKSWAGEN_TAOS_COMFORT_STOP_MIN_DISTANCE = 5.0
+VOLKSWAGEN_TAOS_COMFORT_STOP_MIN_TTC = 4.0
+VOLKSWAGEN_TAOS_COMFORT_STOP_MAX_CLOSING_SPEED = 1.5
+VOLKSWAGEN_TAOS_COMFORT_STOP_CAP_BP = [0.0, 0.5, 1.0, 2.0, 3.5, VOLKSWAGEN_TAOS_COMFORT_STOP_MAX_SPEED]
+VOLKSWAGEN_TAOS_COMFORT_STOP_CAP_V = [-0.45, -0.55, -0.65, -0.80, -0.95, -1.10]
+FORD_MACH_E_FINAL_STOP_MAX_SPEED = 3.0
+FORD_MACH_E_FINAL_STOP_CAP_BP = [0.0, 1.0, FORD_MACH_E_FINAL_STOP_MAX_SPEED]
+FORD_MACH_E_FINAL_STOP_CAP_V = [-0.35, -0.80, -1.50]
 
 
 def get_bolt_acc_pedal_friction_bias(output_accel, a_target, v_ego):
@@ -152,6 +166,13 @@ class LongControlVehicleTuning:
     self.is_hyundai_santa_fe_2022 = bool(
       CP.brand == "hyundai" and str(getattr(CP, "carFingerprint", "")) == "HYUNDAI_SANTA_FE_2022"
     )
+    self.is_volkswagen_taos = bool(
+      CP.brand == "volkswagen" and
+      str(getattr(CP, "carFingerprint", "")) == str(VOLKSWAGEN_CAR.VOLKSWAGEN_TAOS_MK1)
+    )
+    self.is_ford_mach_e = bool(
+      CP.brand == "ford" and getattr(CP, "carFingerprint", None) == FORD_CAR.FORD_MUSTANG_MACH_E_MK1
+    )
     self.is_bolt_acc_pedal_friction_car = bool(
       CP.brand == "gm" and
       CP.enableGasInterceptorDEPRECATED and
@@ -172,11 +193,47 @@ class LongControlVehicleTuning:
     self.bolt_start_handoff_frames = 0
     self.subaru_stop_release_frames = 0
 
-  def shape_stopping_accel(self, output_accel, a_target, should_stop, v_ego, has_lead, stop_accel):
+  def shape_stopping_accel(self, output_accel, a_target, should_stop, v_ego, has_lead, stop_accel, leads=None):
     """Shape low-speed stop braking without overriding urgent targets."""
+    if self.is_ford_mach_e and should_stop and 0.1 < v_ego < FORD_MACH_E_FINAL_STOP_MAX_SPEED and a_target <= -1.5:
+      return min(float(output_accel), float(a_target))
+
+    if (
+      self.is_ford_mach_e and should_stop and not has_lead and
+      not any(bool(getattr(lead, "status", False)) for lead in (leads or ())) and
+      0.1 < v_ego < FORD_MACH_E_FINAL_STOP_MAX_SPEED and -1.5 < a_target <= 0.1
+    ):
+      final_stop_cap = float(interp(v_ego, FORD_MACH_E_FINAL_STOP_CAP_BP, FORD_MACH_E_FINAL_STOP_CAP_V))
+      return max(float(output_accel), min(float(a_target) - 0.15, final_stop_cap))
+
+    if self.is_volkswagen_taos and should_stop and has_lead and v_ego < VOLKSWAGEN_TAOS_COMFORT_STOP_MAX_SPEED:
+      comfort_lead = next((
+        lead for lead in (leads or ())
+        if bool(getattr(lead, "status", False)) and
+        abs(float(getattr(lead, "yRel", 0.0))) <= 1.75 and
+        float(getattr(lead, "dRel", 0.0)) > 0.0
+      ), None)
+      if comfort_lead is not None:
+        lead_distance = float(getattr(comfort_lead, "dRel", 0.0))
+        lead_speed = max(0.0, float(getattr(comfort_lead, "vLead", 0.0)))
+        closing_speed = max(0.0, float(v_ego) - lead_speed)
+        ttc = lead_distance / max(closing_speed, 0.1) if closing_speed > 0.1 else float("inf")
+        if (
+          lead_distance >= VOLKSWAGEN_TAOS_COMFORT_STOP_MIN_DISTANCE and
+          ttc >= VOLKSWAGEN_TAOS_COMFORT_STOP_MIN_TTC and
+          closing_speed <= VOLKSWAGEN_TAOS_COMFORT_STOP_MAX_CLOSING_SPEED
+        ):
+          comfort_cap = float(interp(
+            v_ego,
+            VOLKSWAGEN_TAOS_COMFORT_STOP_CAP_BP,
+            VOLKSWAGEN_TAOS_COMFORT_STOP_CAP_V,
+          ))
+          return max(float(output_accel), comfort_cap)
+
     if (
       self.is_hyundai_elantra_2021 and
       should_stop and
+      not has_lead and
       v_ego < HYUNDAI_ELANTRA_FINAL_STOP_MAX_SPEED and
       a_target <= 0.1
     ):
@@ -416,6 +473,18 @@ class LongControlVehicleTuning:
     alpha = DT_CTRL / (tau + DT_CTRL)
     self.toyota_corolla_filtered_a_target += alpha * (float(a_target) - self.toyota_corolla_filtered_a_target)
     return self.toyota_corolla_filtered_a_target
+
+  def hold_toyota_corolla_for_stopped_lead(self, v_ego, leads=None):
+    if not self.is_toyota_corolla_tss2 or v_ego > TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_EGO_SPEED:
+      return False
+
+    return any(
+      bool(getattr(lead, "status", False)) and
+      0.0 < float(getattr(lead, "dRel", 0.0)) <= TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_DISTANCE and
+      abs(float(getattr(lead, "yRel", 0.0))) <= 1.75 and
+      abs(float(getattr(lead, "vLead", 0.0))) <= TOYOTA_COROLLA_STOPPED_LEAD_HOLD_MAX_SPEED
+      for lead in (leads or ())
+    )
 
   def get_integrator_freeze(self, last_output_accel, a_target, error, v_ego, accel_limits):
     volt_test_tune_handoff = self.is_volt and testing_ground.use_2

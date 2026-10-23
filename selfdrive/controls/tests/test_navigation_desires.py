@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from time import monotonic
 
 from cereal import log
 
@@ -51,7 +52,7 @@ def test_nav_desires_keep_left_when_route_requests_it():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightLeft"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightLeft", "updatedAtMonotonic": monotonic()}
 
   helper.update(
     make_car_state(vEgo=20.0, steeringPressed=True, steeringTorque=1.0),
@@ -68,7 +69,10 @@ def test_nav_desires_turn_right_below_lane_change_speed():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "right", "maneuverDistance": 10.0}
+  helper._nav_instruction_state = {
+    "valid": True, "maneuverType": "turn", "maneuverModifier": "right",
+    "maneuverDistance": 10.0, "updatedAtMonotonic": monotonic(),
+  }
 
   helper.update(
     make_car_state(vEgo=5.0, rightBlinker=True),
@@ -81,12 +85,134 @@ def test_nav_desires_turn_right_below_lane_change_speed():
   assert helper.desire == log.Desire.turnRight
 
 
+def test_nav_desires_turn_preview_starts_before_last_second():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True, "maneuverType": "turn", "maneuverModifier": "right",
+    "maneuverDistance": 50.0, "updatedAtMonotonic": monotonic(),
+  }
+
+  helper.update(
+    make_car_state(vEgo=10.5, rightBlinker=True),
+    True,
+    0.0,
+    make_plan(),
+    make_toggles(minimum_lane_change_speed=11.1),
+  )
+
+  assert helper.desire == log.Desire.turnRight
+  assert helper.lane_change_state == LaneChangeState.off
+
+
+def test_routed_turn_replays_signaled_approach_independently_of_lane_change_setting():
+  samples = (
+    (82.6, 13.64, True, log.Desire.none),
+    (69.1, 13.15, True, log.Desire.turnRight),
+    (56.3, 13.18, True, log.Desire.turnRight),
+    (43.1, 13.00, False, log.Desire.none),
+  )
+  for lane_change_speed in (2.777777, 11.1):
+    helper = DesireHelper()
+    helper._update_nav_params = lambda: None
+    toggles = make_toggles(minimum_lane_change_speed=lane_change_speed)
+    for distance, speed, right_blinker, expected in samples:
+      helper._nav_instruction_state = {
+        "valid": True,
+        "maneuverType": "turn",
+        "maneuverModifier": "right",
+        "maneuverDistance": distance,
+        "updatedAtMonotonic": monotonic(),
+      }
+      helper.update(
+        make_car_state(vEgo=speed, rightBlinker=right_blinker),
+        True,
+        0.0,
+        make_plan(),
+        toggles,
+      )
+      assert helper.desire == expected
+      assert helper.lane_change_state == LaneChangeState.off
+      assert helper.turn_direction == expected
+
+
+def test_stale_route_instruction_cannot_request_turn_or_suppress_lane_change():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True,
+    "maneuverType": "turn",
+    "maneuverModifier": "right",
+    "maneuverDistance": 55.0,
+    "updatedAtMonotonic": monotonic() - 10.0,
+  }
+  helper.update(
+    make_car_state(vEgo=13.0, rightBlinker=True),
+    True,
+    0.0,
+    make_plan(),
+    make_toggles(minimum_lane_change_speed=2.777777),
+  )
+
+  assert helper.desire == log.Desire.none
+  assert helper.lane_change_state == LaneChangeState.preLaneChange
+
+
+def test_nav_desires_turn_preview_is_bounded_and_requires_matching_signal():
+  for distance, blinker, speed, maneuver_type in (
+    (65.0, True, 10.5, "turn"),
+    (-1.0, True, 10.5, "turn"),
+    (50.0, False, 10.5, "turn"),
+    (50.0, True, 14.2, "turn"),
+    (50.0, True, 10.5, "arrive"),
+  ):
+    helper = DesireHelper()
+    helper._update_nav_params = lambda: None
+    helper._nav_instruction_state = {
+      "valid": True, "maneuverType": maneuver_type, "maneuverModifier": "right",
+      "maneuverDistance": distance, "updatedAtMonotonic": monotonic(),
+    }
+
+    helper.update(
+      make_car_state(vEgo=speed, rightBlinker=blinker),
+      True,
+      0.0,
+      make_plan(),
+      make_toggles(minimum_lane_change_speed=11.1),
+    )
+
+    assert helper.desire == log.Desire.none
+
+
+def test_nav_desires_turn_preview_respects_stop_hold():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True, "maneuverType": "turn", "maneuverModifier": "right",
+    "maneuverDistance": 20.0, "updatedAtMonotonic": monotonic(),
+  }
+
+  helper.update(
+    make_car_state(vEgo=5.0, rightBlinker=True),
+    True,
+    0.0,
+    make_plan(redLight=True),
+    make_toggles(minimum_lane_change_speed=11.1),
+  )
+
+  assert helper.turn_stop_hold
+  assert helper.desire == log.Desire.none
+
+
 def test_nav_desires_turn_requires_matching_blinker():
   for modifier, opposite_blinker in (("left", "rightBlinker"), ("right", "leftBlinker")):
     helper = DesireHelper()
     helper.nav_desires_allowed = True
     helper._update_nav_params = lambda: None
-    helper._nav_instruction_state = {"valid": True, "maneuverModifier": modifier, "maneuverDistance": 10.0}
+    helper._nav_instruction_state = {
+      "valid": True, "maneuverType": "turn", "maneuverModifier": modifier,
+      "maneuverDistance": 10.0, "updatedAtMonotonic": monotonic(),
+    }
 
     helper.update(
       make_car_state(vEgo=5.0, **{opposite_blinker: True}),
@@ -103,7 +229,10 @@ def test_nav_desires_turn_right_waits_until_turn_is_close():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "right", "maneuverDistance": 300.0}
+  helper._nav_instruction_state = {
+    "valid": True, "maneuverType": "turn", "maneuverModifier": "right",
+    "maneuverDistance": 300.0, "updatedAtMonotonic": monotonic(),
+  }
 
   helper.update(
     make_car_state(vEgo=5.0),
@@ -116,12 +245,86 @@ def test_nav_desires_turn_right_waits_until_turn_is_close():
   assert helper.desire == log.Desire.none
 
 
+def test_matching_routed_turn_does_not_start_lane_change_above_threshold():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True,
+    "updatedAtMonotonic": monotonic(),
+    "maneuverType": "turn",
+    "maneuverModifier": "right",
+    "maneuverDistance": 111.0,
+  }
+
+  helper.update(
+    make_car_state(vEgo=16.0, rightBlinker=True),
+    True,
+    0.0,
+    make_plan(),
+    make_toggles(minimum_lane_change_speed=11.1),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.off
+  assert helper.lane_change_direction == LaneChangeDirection.none
+  assert helper.desire == log.Desire.none
+
+
+def test_distant_routed_turn_does_not_block_lane_change():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True,
+    "updatedAtMonotonic": monotonic(),
+    "maneuverType": "turn",
+    "maneuverModifier": "right",
+    "maneuverDistance": 794.0,
+  }
+
+  helper.update(
+    make_car_state(vEgo=16.0, rightBlinker=True),
+    True,
+    0.0,
+    make_plan(),
+    make_toggles(minimum_lane_change_speed=11.1),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.preLaneChange
+  assert helper.lane_change_direction == LaneChangeDirection.right
+
+
+def test_matching_routed_turn_cancels_pending_lane_change_before_it_starts():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper._nav_instruction_state = {
+    "valid": True,
+    "updatedAtMonotonic": monotonic(),
+    "maneuverType": "turn",
+    "maneuverModifier": "left",
+    "maneuverDistance": 125.0,
+  }
+  helper.lane_change_state = LaneChangeState.preLaneChange
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.prev_one_blinker = True
+
+  helper.update(
+    make_car_state(vEgo=11.0, leftBlinker=True),
+    True,
+    0.0,
+    make_plan(),
+    make_toggles(minimum_lane_change_speed=10.0),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.off
+  assert helper.lane_change_direction == LaneChangeDirection.none
+
+
 def test_nav_desires_off_ramp_lane_guidance_becomes_keep_right():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -145,6 +348,7 @@ def test_nav_desires_off_ramp_lane_guidance_waits_until_split_is_close():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -168,6 +372,7 @@ def test_nav_desires_ambiguous_off_ramp_waits_longer_before_keep_right():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -192,6 +397,7 @@ def test_nav_desires_edge_exit_lane_with_shared_transition_lane_does_not_keep_ri
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -219,6 +425,7 @@ def test_nav_desires_wide_highway_edge_exit_lane_keeps_right():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -246,6 +453,7 @@ def test_nav_desires_shared_transition_lane_keeps_when_active_lane_is_not_outerm
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "off ramp",
     "maneuverModifier": "right",
     "activeLaneDirection": "slightRight",
@@ -272,6 +480,7 @@ def test_nav_desires_ambiguous_fork_slight_right_only_keeps_close_to_split():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "fork",
     "maneuverModifier": "slightRight",
     "activeLaneDirection": "slightRight",
@@ -296,6 +505,7 @@ def test_nav_desires_ambiguous_fork_slight_right_does_not_nudge_too_early():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "fork",
     "maneuverModifier": "slightRight",
     "activeLaneDirection": "slightRight",
@@ -320,6 +530,7 @@ def test_nav_desires_fork_with_active_straight_lane_does_not_turn_left():
   helper._update_nav_params = lambda: None
   helper._nav_instruction_state = {
     "valid": True,
+    "updatedAtMonotonic": monotonic(),
     "maneuverType": "fork",
     "maneuverModifier": "left",
     "activeLaneDirection": "straight",
@@ -341,7 +552,7 @@ def test_nav_desires_do_not_override_lane_change_state_machine():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight", "updatedAtMonotonic": monotonic()}
   helper.lane_change_state = LaneChangeState.laneChangeStarting
   helper.lane_change_direction = LaneChangeDirection.left
   helper.lane_change_ll_prob = 0.5
@@ -454,7 +665,7 @@ def test_nav_desires_nudgeless_only_when_engaged_blocks_keep_when_aol_only():
   helper = DesireHelper()
   helper.nav_desires_allowed = True
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightLeft"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightLeft", "updatedAtMonotonic": monotonic()}
 
   helper.update(
     make_car_state(vEgo=20.0),
@@ -524,7 +735,7 @@ def test_turn_desire_released_after_stop_completes():
 def test_nav_desires_disabled_leave_desire_unchanged():
   helper = DesireHelper()
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "left"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "left", "updatedAtMonotonic": monotonic()}
 
   helper.update(
     make_car_state(vEgo=5.0),
@@ -540,7 +751,7 @@ def test_nav_desires_disabled_leave_desire_unchanged():
 def test_disabling_nav_desires_clears_active_route_desire_immediately():
   helper = DesireHelper()
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight", "updatedAtMonotonic": monotonic()}
   car_state = make_car_state(vEgo=20.0, steeringPressed=True, steeringTorque=-1.0)
   plan = make_plan(laneWidthRight=4.2)
 
@@ -554,7 +765,7 @@ def test_disabling_nav_desires_clears_active_route_desire_immediately():
 def test_nav_lane_positioning_requires_driver_confirmation():
   helper = DesireHelper()
   helper._update_nav_params = lambda: None
-  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight"}
+  helper._nav_instruction_state = {"valid": True, "maneuverModifier": "slightRight", "updatedAtMonotonic": monotonic()}
 
   helper.update(
     make_car_state(vEgo=20.0),

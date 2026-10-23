@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.starpilot.common import starpilot_variables as spv
 
 
@@ -28,6 +30,11 @@ def test_ford_can_map_lkas_button_to_aol():
 def test_volvo_aol_is_held_off_until_pscm_sequence_is_validated():
   assert spv.always_on_lateral_available(SimpleNamespace(brand="volvo")) is False
   assert spv.always_on_lateral_available(SimpleNamespace(brand="honda")) is True
+
+
+def test_tesla_aol_capability_includes_preap():
+  for fingerprint in ("TESLA_MODEL_S_PREAP", "TESLA_MODEL_S_HW1", "TESLA_MODEL_X_HW1", "TESLA_MODEL_3", "TESLA_MODEL_Y"):
+    assert spv.always_on_lateral_available(SimpleNamespace(brand="tesla", carFingerprint=fingerprint))
 
 
 def test_explicit_main_cruise_aol_mapping_is_not_disabled_by_longitudinal_gate():
@@ -166,6 +173,38 @@ def test_ford_lkas_default_migration_ignores_other_brands():
   assert params.get_bool(spv.FORD_LKAS_MIGRATION_KEY) is False
 
 
+def test_sonata_hybrid_lkas_default_migrates_once_without_enabling_aol():
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default("HYUNDAI_SONATA_HYBRID", params) is True
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["AOL_TOGGLE"]
+  assert params.get_bool(spv.SONATA_HYBRID_LKAS_MIGRATION_KEY) is True
+  assert params.get_bool("AlwaysOnLateral") is False
+
+  params.put_int("LKASButtonControl", spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"])
+  assert spv.migrate_sonata_hybrid_lkas_button_default("HYUNDAI_SONATA_HYBRID", params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+
+
+@pytest.mark.parametrize("action", [value for value in spv.BUTTON_FUNCTIONS.values()
+                                  if value != spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]])
+def test_sonata_hybrid_lkas_default_preserves_custom_mapping(action):
+  params = _FakeParams(ints={"LKASButtonControl": action})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default(spv.HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID, params) is True
+  assert params.get_int("LKASButtonControl") == action
+
+
+@pytest.mark.parametrize("car_model", [candidate for candidate in spv.HYUNDAI_CAR
+                                     if candidate != spv.HYUNDAI_CAR.HYUNDAI_SONATA_HYBRID] + ["FORD_ESCAPE_MK4", "MOCK"])
+def test_sonata_hybrid_lkas_default_ignores_other_vehicles(car_model):
+  params = _FakeParams(ints={"LKASButtonControl": spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]})
+
+  assert spv.migrate_sonata_hybrid_lkas_button_default(car_model, params) is False
+  assert params.get_int("LKASButtonControl") == spv.BUTTON_FUNCTIONS["EXPERIMENTAL_MODE"]
+  assert params.get_bool(spv.SONATA_HYBRID_LKAS_MIGRATION_KEY) is False
+
+
 def test_sync_reboot_marker_uses_manager_guard(tmp_path):
   params = _FakeParams()
   marker = tmp_path / "cache" / "use_HD"
@@ -291,6 +330,22 @@ def test_disabled_conditional_experimental_toggles_are_off(monkeypatch, tmp_path
   assert toggles.conditional_model_stop_time == 0.0
   assert toggles.conditional_signal == 0.0
   assert toggles.conditional_signal_lane_detection is False
+
+
+def test_big_ui_exposes_developer_toggles_without_persisting_developer_ui(monkeypatch, tmp_path):
+  params_cls = spv.Params
+
+  def isolated_params(_path=None, memory=False, return_defaults=False):
+    return params_cls(str(tmp_path / ("memory" if memory else "params")), return_defaults=return_defaults)
+
+  monkeypatch.setattr(spv, "Params", isolated_params)
+  monkeypatch.setattr(spv.HARDWARE, "get_device_type", lambda: "tici")
+  monkeypatch.delenv("BIG", raising=False)
+
+  variables = spv.StarPilotVariables()
+
+  assert variables.starpilot_toggles.developer_ui is True
+  assert variables.params_raw.get_bool("DeveloperUI") is False
 
 
 def test_device_shutdown_hours_convert_directly_to_seconds():

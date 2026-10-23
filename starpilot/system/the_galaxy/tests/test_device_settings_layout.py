@@ -44,6 +44,20 @@ def test_galaxy_layout_removes_obsolete_and_duplicate_controls():
   ) == 1
 
 
+def test_slc_override_method_is_not_exposed_in_either_settings_ui():
+  layout = _layout()
+  galaxy_keys = {
+    param["key"]
+    for section in layout
+    for param in section.get("params", [])
+  }
+  device_ui = (REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/longitudinal.py").read_text(encoding="utf-8")
+
+  assert "SLCOverride" not in galaxy_keys
+  assert 'SettingRow("SLCOverride"' not in device_ui
+  assert "SLC_OVERRIDE_OPTIONS" not in device_ui
+
+
 def test_galaxy_layout_contains_basic_mode_controls():
   sections = _params_by_section(_layout())
 
@@ -66,6 +80,25 @@ def test_galaxy_layout_contains_basic_mode_controls():
   assert {"AlphaLongitudinalEnabled", "ForceOffroad", "GalaxyDeveloperMode"} <= sections["Developer"].keys()
 
 
+def test_tesla_aol_brake_disengage_is_tesla_only_and_opt_in():
+  setting = _params_by_section(_layout())["Lateral (Steering)"]["TeslaAOLDisengageOnBrake"]
+
+  assert _declared_default("TeslaAOLDisengageOnBrake") == "0"
+  assert setting["vehicle_makes"] == ["Tesla"]
+  assert setting["parent_key"] == "AlwaysOnLateral"
+  assert setting["ui_type"] == "toggle"
+
+
+def test_tesla_screen_tap_is_optional_parked_only_galaxy_setting():
+  setting = _params_by_section(_layout())["Lateral (Steering)"]["TeslaAOLScreenTap"]
+  assert _declared_default("TeslaAOLScreenTap") == "0"
+  assert setting["vehicle_makes"] == ["Tesla"]
+  assert setting["parent_key"] == "AlwaysOnLateral"
+  assert setting["requires_offroad"] is True
+  assert setting["ui_type"] == "toggle"
+  assert "detected automatically" in setting["description"]
+
+
 def test_galaxy_new_ui_is_the_visible_default_choice():
   galaxy_default = _params_by_section(_layout())["Developer"]["GalaxyMobileDefault"]
 
@@ -73,6 +106,38 @@ def test_galaxy_new_ui_is_the_visible_default_choice():
   assert galaxy_default["settings_tier"] == "simple"
   assert galaxy_default["label"] == "Use Galaxy (new) by Default"
   assert "Galaxy (old)" in galaxy_default["description"]
+
+
+def test_driving_personality_controls_are_not_parked_only():
+  params = {
+    param["key"]: param
+    for section in _layout()
+    for param in section.get("params", [])
+  }
+  personality_keys = {
+    "CustomPersonalities",
+    *{f"{profile}PersonalityProfile" for profile in ("Traffic", "Aggressive", "Standard", "Relaxed")},
+    "TrafficFollow", "AggressiveFollow", "AggressiveFollowHigh", "StandardFollow", "StandardFollowHigh",
+    "RelaxedFollow", "RelaxedFollowHigh",
+    *{
+      f"{profile}{suffix}"
+      for profile in ("Traffic", "Aggressive", "Standard", "Relaxed")
+      for suffix in ("JerkAcceleration", "JerkDeceleration", "JerkDanger", "JerkSpeedDecrease", "JerkSpeed")
+    },
+  }
+
+  assert personality_keys <= params.keys()
+  assert all(params[key].get("requires_offroad") is not True for key in personality_keys)
+
+
+def test_pedal_feedback_wheel_uses_existing_pedal_toggle():
+  setting = _params_by_section(_layout())["Visual (Display & UI)"]["PedalsOnUI"]
+
+  assert _declared_default("PedalsOnUI") == "0"
+  assert setting["label"] == "Pedal-Responsive Wheel"
+  assert setting["settings_tier"] == "simple"
+  assert setting["ui_type"] == "toggle"
+  assert "ShowBrakeStatus" not in _params_by_section(_layout())["Visual (Display & UI)"]
 
 
 def test_ford_lateral_controls_are_ford_only_and_galaxy_only():
@@ -248,6 +313,15 @@ def test_requested_simple_and_advanced_settings_tiers():
         if not param["key"].startswith("PIPPreview")
         and param["key"] != "DisableWideRoad"
       ]
+    if section_name == "Device & Data":
+      params = [
+        param for param in params
+        if param["key"] not in {
+          "ScreenBrightness", "ScreenBrightnessOnroad", "StandbyWakeEngage",
+          "StandbyWakeDisengage", "StandbyWakeInfoAlert", "StandbyWakeWarningAlert",
+          "StandbyWakeCriticalAlert", "StandbyWakeTurnSignal", "StandbyWakeButton",
+        }
+      ]
     assert {param["settings_tier"] for param in params} == {"simple"}
 
   for key in ("AlwaysOnLateral", "LaneChanges", "QOLLateral"):
@@ -292,6 +366,16 @@ def test_requested_simple_and_advanced_settings_tiers():
   assert developer["DeveloperUI"]["settings_tier"] == "advanced"
   assert developer["RedneckCruise"]["settings_tier"] == "advanced"
   assert sections["Visual (Display & UI)"]["DisableWideRoad"]["settings_tier"] == "advanced"
+
+  device = sections["Device & Data"]
+  assert device["ScreenBrightness"]["settings_tier"] == "advanced"
+  assert device["ScreenBrightnessOnroad"]["settings_tier"] == "advanced"
+  for key in (
+    "StandbyWakeEngage", "StandbyWakeDisengage", "StandbyWakeInfoAlert",
+    "StandbyWakeWarningAlert", "StandbyWakeCriticalAlert", "StandbyWakeTurnSignal",
+    "StandbyWakeButton",
+  ):
+    assert device[key]["settings_tier"] == "advanced"
 
 
 def test_turn_steering_limit_mute_speed_is_galaxy_developer_only():
@@ -344,6 +428,43 @@ def test_toyota_auto_hold_is_galaxy_only():
   assert setting["ui_type"] == "toggle"
   assert setting["data_type"] == "bool"
 
+
+def test_rav4_radar_is_galaxy_only_parked_only_and_default_off():
+  setting = _params_by_section(_layout())["Vehicle"]["ToyotaRadarMode"]
+  assert _declared_default("ToyotaRadarMode") == "0"
+  assert setting["vehicle_makes"] == ["Toyota"]
+  assert setting["galaxy_only"] is True
+  assert setting["requires_offroad"] is True
+  assert setting["settings_tier"] == "simple"
+  assert setting["options"] == [
+    {"value": 0, "label": "Off"}, {"value": 1, "label": "ACC Target"}, {"value": 2, "label": "Fused Tracks"},
+  ]
+
+
+def test_cluster_offset_is_in_galaxy_developer_section_only():
+  sections = _params_by_section(_layout())
+  assert "ClusterOffset" not in sections["Vehicle"]
+  setting = sections["Developer"]["ClusterOffset"]
+
+  assert setting["parent_key"] == "GalaxyDeveloperMode"
+  assert setting["settings_tier"] == "advanced"
+  assert setting["data_type"] == "float"
+  assert "1x = no offset" in setting["description"]
+  assert setting["unit"] == "x"
+  assert setting["min"] == 1.0
+  assert setting["max"] == 1.05
+  assert setting["step"] == 0.001
+
+  native_vehicle_settings = REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/vehicle.py"
+  native_source = native_vehicle_settings.read_text(encoding="utf-8")
+  assert 'SettingRow("ClusterOffset"' not in native_source
+  assert "def _show_offset_selector" not in native_source
+
+  for galaxy_source in (
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings.js",
+    REPO_ROOT / "starpilot/system/the_galaxy/assets/mobile/js/params.js",
+  ):
+    assert "ClusterOffset:" not in galaxy_source.read_text(encoding="utf-8")
 
 def test_human_acceleration_param_is_removed():
   params_source = PARAM_KEYS_PATH.read_text(encoding="utf-8")

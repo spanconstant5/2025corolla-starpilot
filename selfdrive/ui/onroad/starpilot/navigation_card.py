@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 
 import pyray as rl
 
 from openpilot.common.params import UnknownKeyName
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import FontWeight, gui_app
+from openpilot.system.ui.lib.application import FONT_SCALE, FontWeight, gui_app
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 ASSETS_PATH = Path(__file__).resolve().parents[4] / "starpilot" / "assets" / "navigation"
 FALLBACK_ICON = "direction_turn_straight.png"
 NAV_CANCEL_HOLD_SECONDS = 0.65
+NAV_STATE_UPDATE_INTERVAL = 0.1
 
 
 def _format_distance(distance_m: float, is_metric: bool) -> str:
@@ -62,6 +65,7 @@ class NavigationCardRenderer(Widget):
     self._font_bold = gui_app.font(FontWeight.BOLD)
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
     self._icons: dict[str, rl.Texture2D] = {}
+    self._icon_filenames: dict[tuple[str, str], str] = {}
     self._layout_variant = layout_variant
 
     self._enabled = False
@@ -80,6 +84,8 @@ class NavigationCardRenderer(Widget):
     self._interactive_rect = rl.Rectangle(0, 0, 0, 0)
     self._click_delay = 0.15
     self._press_started_at: float | None = None
+    self._last_state_update = -math.inf
+    self._state_context: tuple[object, bool] | None = None
 
   @property
   def _hit_rect(self) -> rl.Rectangle:
@@ -97,7 +103,8 @@ class NavigationCardRenderer(Widget):
     except UnknownKeyName:
       self._collapsed_param_supported = False
       self._collapsed_fallback = new_state
-      self._collapsed = new_state
+    self._collapsed = new_state
+    self._last_state_update = -math.inf
 
   def _cancel_navigation(self) -> None:
     params = ui_state.ui_params
@@ -120,6 +127,9 @@ class NavigationCardRenderer(Widget):
     self._collapsed_fallback = False
     self._collapsed = False
     self._valid = False
+    self._interactive_rect = rl.Rectangle(0, 0, 0, 0)
+    self._last_state_update = -math.inf
+    self._state_context = None
 
   def _handle_mouse_press(self, mouse_pos) -> None:
     self._press_started_at = rl.get_time()
@@ -140,20 +150,24 @@ class NavigationCardRenderer(Widget):
       self._toggle_collapsed()
 
   def _icon_filename(self, maneuver_type: str, modifier: str) -> str:
+    key = (maneuver_type, modifier)
+    if key in self._icon_filenames:
+      return self._icon_filenames[key]
+
     normalized_type = _normalize_maneuver_type(maneuver_type)
     if modifier == "uturn":
-      return "direction_uturn.png"
+      candidate = "direction_uturn.png"
+    else:
+      suffix = _modifier_suffix(modifier)
+      candidate = f"direction_{normalized_type}.png" if suffix == "" else f"direction_{normalized_type}_{suffix}.png"
 
-    suffix = _modifier_suffix(modifier)
-    candidate = f"direction_{normalized_type}.png" if suffix == "" else f"direction_{normalized_type}_{suffix}.png"
-    return candidate if (ASSETS_PATH / candidate).exists() else FALLBACK_ICON
+    self._icon_filenames[key] = candidate if (ASSETS_PATH / candidate).exists() else FALLBACK_ICON
+    return self._icon_filenames[key]
 
   def _get_icon(self, maneuver_type: str, modifier: str):
     icon_name = self._icon_filename(maneuver_type, modifier)
     if icon_name not in self._icons:
       icon_path = ASSETS_PATH / icon_name
-      if not icon_path.exists():
-        icon_path = ASSETS_PATH / FALLBACK_ICON
       image = rl.load_image(str(icon_path))
       texture = rl.load_texture_from_image(image)
       rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
@@ -165,14 +179,22 @@ class NavigationCardRenderer(Widget):
   def _update_state(self) -> None:
     params = ui_state.ui_params
     self._enabled = params.get_bool("NavigationUI")
+    destination = params.get("NavDestination") if self._enabled else None
+    if not destination:
+      self._valid = False
+      self._interactive_rect = rl.Rectangle(0, 0, 0, 0)
+      self._state_context = None
+      return
+
+    now = time.monotonic()
+    context = (destination, ui_state.is_metric)
+    if context == self._state_context and now - self._last_state_update < NAV_STATE_UPDATE_INTERVAL:
+      return
+
+    self._last_state_update = now
+    self._state_context = context
     self._valid = False
     self._interactive_rect = rl.Rectangle(0, 0, 0, 0)
-
-    if not self._enabled:
-      return
-
-    if not (params.get("NavDestination") or ""):
-      return
 
     raw_state = ui_state.params_memory.get("NavInstructionState") or {}
     if isinstance(raw_state, str):
@@ -320,17 +342,20 @@ class NavigationCardRenderer(Widget):
     title_lines, title_font_size = self._fit_title(self._primary_text, text_area_width, preferred_font_size, minimum_font_size)
 
     secondary_font_size = 26
-    text_block_h = len(title_lines) * title_font_size
+    title_line_height = title_font_size * FONT_SCALE
+    secondary_height = secondary_font_size * FONT_SCALE
+    title_lines = title_lines[:2]
+    text_block_h = len(title_lines) * title_line_height
     if self._secondary_text:
-      text_block_h += 8 + secondary_font_size
+      text_block_h += 8 + secondary_height
     text_block_y = container_y + (card_height - text_block_h) // 2
 
-    for index, line in enumerate(title_lines[:2]):
-      rl.draw_text_ex(self._font_bold, line, rl.Vector2(text_x, text_block_y + index * title_font_size), title_font_size, 0, rl.WHITE)
+    for index, line in enumerate(title_lines):
+      rl.draw_text_ex(self._font_bold, line, rl.Vector2(text_x, text_block_y + index * title_line_height), title_font_size, 0, rl.WHITE)
 
     if self._secondary_text:
       secondary_text = self._truncate_text(self._secondary_text, text_area_width, secondary_font_size)
-      secondary_y = text_block_y + len(title_lines) * title_font_size + 8
+      secondary_y = text_block_y + len(title_lines) * title_line_height + 8
       rl.draw_text_ex(
         self._font_medium,
         secondary_text,
@@ -352,7 +377,7 @@ class NavigationCardRenderer(Widget):
     )
 
     then_x = divider_x + 15
-    then_label = "Then"
+    then_label = tr("Then")
     then_font_size = 36
     then_size = measure_text_cached(self._font_medium, then_label, then_font_size)
     then_label_x = then_x + (then_section_width - 23 - then_size.x) / 2
@@ -513,7 +538,6 @@ class NavigationCardRenderer(Widget):
     )
 
   def _render(self, rect: rl.Rectangle) -> None:
-    self._update_state()
     if not self._valid:
       return
     if self._collapsed:

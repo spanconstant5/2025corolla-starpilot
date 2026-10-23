@@ -1,11 +1,11 @@
 from opendbc.car import Bus, structs, get_safety_config, uds
 from opendbc.car.toyota.carstate import CarState
-from opendbc.car.toyota.carcontroller import CarController
+from opendbc.car.toyota.carcontroller import CarController, uses_rav4_hybrid_sdsu_longitudinal
 from opendbc.car.toyota.radar_interface import RadarInterface
 from opendbc.car.toyota.values import Ecu, CAR, DBC, ToyotaFlags, CarControllerParams, TSS2_CAR, RADAR_ACC_CAR, NO_DSU_CAR, \
                                                   MIN_ACC_SPEED, EPS_SCALE, NO_STOP_TIMER_CAR, ANGLE_CONTROL_CAR, \
                                                   ToyotaSafetyFlags, LEGACY_PRIUS_CAR, TOYOTA_AUTO_HOLD_CARS, \
-                                                  TSS3_LONG_MODE, TSS3LongMode, TSS3_LAT_MODE, TSS3LatMode
+                                                  uses_toyota_auto_hold_aeb, ARS510_RADAR_CAR
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -18,6 +18,27 @@ class CarInterface(CarInterfaceBase):
   CarState = CarState
   CarController = CarController
   RadarInterface = RadarInterface
+
+  def update(self, can_packets, starpilot_toggles):
+    ret, fp_ret = super().update(can_packets, starpilot_toggles)
+    if self.CC.tss3_request_transport is not None:
+      self.CC.observe_tss3_request_plane(can_packets, ret.canValid)
+      authority_unavailable = self.CC.tss3_request_transport.authority_unavailable()
+      ret.steerFaultTemporary = ret.steerFaultTemporary or authority_unavailable
+      if self.CP.openpilotLongitudinalControl:
+        ret.accFaulted = ret.accFaulted or authority_unavailable
+    return ret, fp_ret
+
+  @classmethod
+  def get_params(cls, candidate, fingerprint, car_fw, alpha_long, is_release, docs, starpilot_toggles):
+    ret = super().get_params(candidate, fingerprint, car_fw, alpha_long, is_release, docs, starpilot_toggles)
+    radar_mode = getattr(starpilot_toggles, "toyota_radar_mode_requested", 0)
+    if candidate in ARS510_RADAR_CAR and radar_mode in (1, 2):
+      ret.flags |= ToyotaFlags.ARS510_RADAR.value
+      if radar_mode == 2:
+        ret.flags |= ToyotaFlags.ARS510_FUSED.value
+      ret.radarUnavailable = False
+    return ret
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
@@ -102,7 +123,7 @@ class CarInterface(CarInterfaceBase):
       # https://engage.toyota.com/static/images/toyota_safety_sense/TSS_Applicability_Chart.pdf
       stop_and_go = candidate != CAR.TOYOTA_AVALON
 
-    elif candidate in (CAR.TOYOTA_RAV4_TSS2, CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_RAV4_TSS2_2023, CAR.TOYOTA_RAV4_PRIME):
+    elif candidate in ANGLE_CONTROL_CAR:
       ret.lateralTuning.init('pid')
       ret.lateralTuning.pid.kiBP = [0.0]
       ret.lateralTuning.pid.kpBP = [0.0]
@@ -165,8 +186,10 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.GAS_INTERCEPTOR.value
 
     toyota_auto_hold = Params(return_defaults=True).get_bool("ToyotaAutoHold")
-    if toyota_auto_hold and candidate in TOYOTA_AUTO_HOLD_CARS:
-      ret.alternativeExperience |= ALTERNATIVE_EXPERIENCE.ALLOW_AEB
+    if toyota_auto_hold and ret.openpilotLongitudinalControl and candidate in TOYOTA_AUTO_HOLD_CARS:
+      ret.alternativeExperience |= (ALTERNATIVE_EXPERIENCE.ALLOW_AEB
+                                    if uses_toyota_auto_hold_aeb(ret)
+                                    else ALTERNATIVE_EXPERIENCE.TOYOTA_AUTO_HOLD)
       ret.flags |= ToyotaFlags.AUTO_BRAKE_HOLD.value
 
     if not ret.openpilotLongitudinalControl:
@@ -174,7 +197,8 @@ class CarInterface(CarInterfaceBase):
 
     # min speed to enable ACC. if car can do stop and go, then set enabling speed
     # to a negative value, so it won't matter.
-    ret.minEnableSpeed = -1. if (stop_and_go or ret.enableGasInterceptorDEPRECATED) else MIN_ACC_SPEED
+    rav4_hybrid_sdsu_long_defaults = uses_rav4_hybrid_sdsu_longitudinal(ret)
+    ret.minEnableSpeed = -1. if (stop_and_go or ret.enableGasInterceptorDEPRECATED or rav4_hybrid_sdsu_long_defaults) else MIN_ACC_SPEED
 
     prius_long_defaults = candidate in LEGACY_PRIUS_CAR and ret.openpilotLongitudinalControl
     camry_hybrid_long_defaults = (candidate == CAR.TOYOTA_CAMRY and ret.openpilotLongitudinalControl and
@@ -191,7 +215,7 @@ class CarInterface(CarInterfaceBase):
       if ret.flags & ToyotaFlags.HYBRID.value:
         ret.longitudinalActuatorDelay = 0.05
 
-    if camry_hybrid_long_defaults:
+    if camry_hybrid_long_defaults or rav4_hybrid_sdsu_long_defaults:
       # The THS eCVT responds much faster than the legacy non-TSS2 ICE tune.
       ret.longitudinalActuatorDelay = 0.05
       ret.vEgoStopping = 0.25
@@ -210,26 +234,22 @@ class CarInterface(CarInterfaceBase):
       ret.stopAccel = -1.5
 
     if candidate == CAR.TOYOTA_COROLLA_TSS3:
-      # 0x160 is keyless E2E. The target EPS patch handles the protected
-      # downstream steering path, so no openpilot SecOC key is requested.
+      # The RAM-resident EPS signer authenticates complete host-owned 0x08A
+      # applications. Corolla uses the four-frame 0x777 carrier on bus 0.
       ret.secOcRequired = False
       ret.dashcamOnly = False
       ret.radarUnavailable = True
       ret.alphaLongitudinalAvailable = True
-      ret.openpilotLongitudinalControl = TSS3_LONG_MODE != TSS3LongMode.OFF
+      ret.openpilotLongitudinalControl = False
       ret.autoResumeSng = False
       ret.minEnableSpeed = MIN_ACC_SPEED
       ret.steerControlType = SteerControlType.angle
       ret.lateralTuning.init('pid')
 
-      tx_enabled = (TSS3_LONG_MODE == TSS3LongMode.LIVE and
-                    TSS3_LAT_MODE in (TSS3LatMode.OFF, TSS3LatMode.SHADOW, TSS3LatMode.LIVE))
-      if tx_enabled:
-        cfg = get_safety_config(structs.CarParams.SafetyModel.toyota)
-        cfg.safetyParam = EPS_SCALE[candidate] | ToyotaSafetyFlags.TSS3.value
-        ret.safetyConfigs = [cfg]
-      else:
-        ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.noOutput)]
+      cfg = get_safety_config(structs.CarParams.SafetyModel.toyota)
+      cfg.safetyParam = (EPS_SCALE[candidate] | ToyotaSafetyFlags.TSS3_SIGNER.value |
+                         ToyotaSafetyFlags.TSS3_08A_HOST.value | ToyotaSafetyFlags.TSS3_COROLLA_SIGNER.value)
+      ret.safetyConfigs = [cfg]
 
     return ret
 

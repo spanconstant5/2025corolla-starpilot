@@ -8,12 +8,10 @@ It carries the supplied Corolla control work into StarPilot while preserving
 the narrow Panda transmit allowlist and the evidence boundaries around the
 vehicle.
 
-The branch is ready for code review and offline testing. It has **not** been
-independently driven or replayed here against the author's route files, because
-those files were not included in `Corolla_Fingerprint_v1.zip`. The source notes
-report working longitudinal control on route 24 and working lateral control on
-route 28. Those remain source-artifact results rather than new verification by
-this repository.
+The RAM-resident signer and its Corolla transport are now verified live on the
+target EPS. This StarPilot integration has passed focused controller, transport,
+and Panda safety tests, but it has not yet been road-qualified as a complete
+build. Longitudinal control remains deliberately disabled.
 
 ## Current status
 
@@ -21,10 +19,12 @@ this repository.
 |---|---|---|
 | 2025 EPS identity | Verified | F181 `8965F1208000` + `8A3111213000`, serial `8965012N50E12H030731`, MCU `R7F701383` |
 | EPS application transfer | Verified offline | The analyzed 2025 and 2023 high application regions are byte-identical from `0x17E00` upward |
-| Longitudinal command | Implemented | Camera-origin 32-byte `0x160`, supplied route-24 result |
-| Lateral command | Implemented | Steering request in `0x160` bytes 22–23 at 537.7 counts/degree, supplied route-28 result |
-| E2E protection | Implemented and tested | Counter plus CRC-16/CCITT with data ID `0x444A` |
-| Panda safety | Debug-gated and tested | Only 32-byte `0x160` on bus 0 is accepted in TSS3 mode |
+| RAM-resident signer | Verified live | F181 installer verdict `request_signer_live_probe_pass`, payload SHA-256 `72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122` |
+| Signer transport | Verified live | Four classic `0x777` frames and `0x7A9` response on Panda bus 0 |
+| 100 Hz benchmark | Qualified with loss handling | 100 sent, 95 responses, 94.343 Hz effective, 25.366 ms maximum latency, max 7 outstanding; five isolated responses were dropped during high Panda RX-buffer overflow |
+| Lateral command | Integrated, offline-tested | Signed host `0x08A`, Corolla 55-degree cap, 100 Hz scheduler and 90 ms signer watchdog |
+| Longitudinal command | Disabled | Host application is constrained to zero acceleration pending separate Corolla validation |
+| Panda safety | Debug-gated and tested | Exact Corolla signer carrier, admin, and signed-`0x08A` envelopes only |
 | Automatic vehicle identification | Unresolved | Available moving traces are not uniquely joined to the 2025 F181 identity |
 | Vehicle-specific tuning | Unresolved | Exact 2025 mass, steering ratio calibration, and driver-override threshold are not proved |
 
@@ -39,6 +39,40 @@ Toyota Corolla Hybrid 2025 (TSS 3.0)
 in StarPilot's vehicle settings and enable **Disable Fingerprinting**. This uses
 StarPilot's existing `CarModel` override. The port does not add a partial
 fingerprint that could silently identify another Toyota as this car.
+
+## Reinstall the volatile signer on the comma
+
+The verified request-signer kit must remain at `/data/tss3-oracle`. After a
+full vehicle power cycle, turn the vehicle on, leave it in Park with the wheels
+straight, and open:
+
+```text
+StarPilot > Vehicle Settings > Corolla RAM Signer > INSTALL
+```
+
+The action is shown only for the manually selected Corolla TSS3 platform and
+is enabled only while the car is on, stationary, in Park, and disengaged. It
+verifies the exact Corolla target, host-runtime hash, authenticated-payload
+hash, bus-0 request/response profile, and the installer's live-probe verdict.
+It then cycles openpilot controls so Panda leaves diagnostic mode and reapplies
+the Corolla safety configuration. The full JSON and terminal log are retained
+under `/data/tss3-oracle-runs/ui-*`.
+
+The equivalent SSH fallback remains:
+
+```bash
+cd /data/tss3-oracle
+./tss3-request-signer doctor
+./tss3-request-signer install /tmp/request-signer-install.json
+cd /data/openpilot
+python3 -c 'from openpilot.common.params import Params; Params().put_bool("OnroadCycleRequested", True)'
+```
+
+Wait for openpilot to cycle back onroad before testing; this last command makes
+`pandad` leave diagnostic mode and reapply the Corolla safety configuration.
+
+Do not drive or power the vehicle off during either install path. This loads
+volatile EPS RAM only; it does not write persistent EPS firmware.
 
 Automatic matching needs several full `rlog` segments from this exact car,
 covering startup, standstill, forward driving, reverse, turn signals, doors,
@@ -57,16 +91,18 @@ after it has converged and is distinguishable from other supported platforms.
 
 ## What changed
 
-The port adds `TOYOTA_COROLLA_TSS3`, a dedicated CAN FD DBC, target-specific
-CarState parsing, 0x160 E2E handling, the controller substitution, and a Panda
-safety mode. The controller:
+The port adds `TOYOTA_COROLLA_TSS3`, target-specific state parsing, the unified
+TSS3 host-application DBC, a pipelined signer transport, and a Corolla-specific
+Panda safety mode. The controller:
 
-- sends at most once for each new camera counter;
-- changes only the known acceleration and steering fields;
-- preserves the camera's unknown bytes and whichever axis openpilot is not
-  controlling;
-- recomputes the counter and E2E checksum;
-- never transmits the older gateway-origin `0x1A0` path.
+- builds the complete 28-byte host application at normal 100 Hz control cadence;
+- sends it through four classic `0x777` frames on bus 0;
+- matches the EPS `0x7A9` response by sequence and appends `FV4||MAC28`;
+- publishes the resulting 32-byte signed `0x08A` on bus 0;
+- supersedes a missing response when a later signer sequence arrives, without
+  replaying stale actuator state;
+- releases replacement ownership on disable, CAN invalidity, signer failure,
+  or watchdog expiry.
 
 The detailed field map, evidence pins, and implementation boundaries are in
 [docs/COROLLA_2025_TSS3_PORT.md](docs/COROLLA_2025_TSS3_PORT.md).
@@ -74,32 +110,40 @@ The detailed field map, evidence pins, and implementation boundaries are in
 ## Safety boundaries
 
 The experimental TSS3 Panda mode is available only when Panda is built with
-`ALLOW_DEBUG`. Its transmit allowlist contains one command: a 32-byte `0x160`
-on bus 0. Legacy 8-byte `0x160`, `0x1A0`, older Toyota steering messages, and
-all unrelated addresses remain blocked.
+`ALLOW_DEBUG`. Its transmit allowlist contains the exact eight-byte signer admin
+and four-frame `0x777` request carrier on bus 0, plus 32-byte signed `0x08A`
+on bus 0. Legacy `0x160`, `0x1A0`, older Toyota steering messages, and unrelated
+addresses remain blocked.
 
-Panda limits acceleration to the observed stock relay envelope of
-`-3.5..2.0 m/s²`; the controller currently clamps its substituted request to
-`-1.5..1.5 m/s²`. Steering may change by at most 1,500 counts per accepted
-camera frame. A rejected command does not advance the rate-limit baseline.
+Panda validates the complete host-application shape, requires zero acceleration
+in both request fields, gates active lateral requests on controls state, limits
+the Corolla request to 55 degrees, and applies angle-command rate checks using
+the E210 wheelbase and steering ratio. Native `0x08A` forwarding resumes if host
+publication disappears for 100 ms.
 
 A production Panda build does not enable this experimental safety allowlist and
-will reject the controller's 0x160 output. That is intentional until the
+will reject the signer transport and host `0x08A`. That is intentional until the
 remaining vehicle-level policy and validation work is complete.
 
 ## Known vehicle behavior
 
-- The supplied notes report both lateral and longitudinal control working.
-- Turn signals were absent from the three tapped buses, so they cannot currently
-  cancel the `Turn exceeds limit` condition through a proved signal.
+- Earlier source notes report both lateral and longitudinal control through the
+  superseded camera-`0x160` experiment; this branch does not enable that path.
+- The 100 Hz benchmark lost sequences 3, 20, 55, 80, and 91 while later replies
+  continued. Its install log also reported `rx_buffer_overflow: 1733`, so Panda
+  receive pressure remains a metric to investigate even though the bounded
+  runtime pipeline tolerates isolated response loss.
+- The shared DBC decodes retained turn-signal traffic, but its behavior still
+  needs dynamic validation on this car before it is treated as authoritative.
 - The Toyota hands-on-wheel warning appears to be enforced by a torque timeout.
   No verified CAN suppression was found; hands-on use remains required.
-- The physical driver-torque signal is known on `0x030`, but an acceptable
-  driver-override threshold has not been dynamically validated, so the port does
-  not invent one.
-- The platform currently inherits the established E210 Corolla values of
-  3,060 lb, 2.67 m wheelbase, and 13.9 steering ratio. Exact values for this
-  specimen remain to be confirmed together.
+- The combined driver-torque signal on `0x030` is decoded. Its current 0.6 Nm
+  steering-pressed threshold is inherited from the TSS3 integration and still
+  needs dynamic Corolla validation.
+- The platform uses the US-sedan E210 values of 3,060 lb, 2.70 m wheelbase,
+  and 13.9 steering ratio. The wheelbase is corroborated by the 2023 US-built
+  Corolla SE research package; the exact steering ratio still needs direct
+  validation on the 2025 Hybrid.
 
 ## Offline checks
 
@@ -113,6 +157,8 @@ export ALLOW_DEBUG=1
 python -m compileall -q opendbc_repo/opendbc/car/toyota
 scons -C opendbc_repo/opendbc/safety/tests -D -j2
 pytest -q opendbc_repo/opendbc/car/toyota/tests/test_tss3.py
+pytest -q opendbc_repo/opendbc/car/toyota/tests/test_tss3_corolla.py
+pytest -q opendbc_repo/opendbc/car/toyota/tests/test_tss3_transport.py
 pytest -q opendbc_repo/opendbc/safety/tests/test_toyota_tss3.py
 pytest -q tools/tests/test_corolla_tss3_fingerprint.py tools/tests/test_corolla_tss3_census.py
 ```
@@ -127,10 +173,12 @@ pytest -q tools/tests/test_corolla_tss3_fingerprint.py tools/tests/test_corolla_
   evidence authority for the 2025 EPS identity and application comparison.
 - This repository is based on
   [firestar5683/StarPilot](https://github.com/firestar5683/StarPilot) commit
-  `ac3fb6a4d889bb0e43373d602ad80ac349ecb81c`.
+  `823a5d5674ec6635b51dd989884dfbd661f90dc4` (StarPilot branch tip on
+  2026-10-23).
 - The supplied working control implementation originated from a sunnypilot
   port. Its measured behavior and limitations are retained in the port notes.
 
-The original StarPilot project README is preserved at
-[docs/STARPILOT_UPSTREAM_README.md](docs/STARPILOT_UPSTREAM_README.md). Existing
-license and third-party notice files remain authoritative for inherited code.
+The StarPilot README from the port's original `ac3fb6a4` base is preserved at
+[docs/STARPILOT_UPSTREAM_README.md](docs/STARPILOT_UPSTREAM_README.md) for
+historical comparison. Existing license and third-party notice files remain
+authoritative for inherited code.

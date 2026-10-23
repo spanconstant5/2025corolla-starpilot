@@ -8,7 +8,8 @@ from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.toyota.values import ToyotaFlags, ToyotaStarPilotFlags, CAR, DBC, STEER_THRESHOLD, NO_STOP_TIMER_CAR, \
                                                   TSS2_CAR, RADAR_ACC_CAR, EPS_SCALE, UNSUPPORTED_DSU_CAR, \
-                                                  SECOC_CAR, LEGACY_PRIUS_CAR, TSS3_PT_BUS
+                                                  SECOC_CAR, LEGACY_PRIUS_CAR, TSS3_STEER_DRIVER_TORQUE_THRESHOLD
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 
 ButtonType = structs.CarState.ButtonEvent.Type
 SteerControlType = structs.CarParams.SteerControlType
@@ -60,7 +61,10 @@ class CarState(CarStateBase):
     self.cluster_speed_hyst_gap = CV.KPH_TO_MS / 2.
     self.cluster_min_speed = CV.KPH_TO_MS / 2.
 
-    if CP.flags & ToyotaFlags.SECOC.value and not CP.flags & ToyotaFlags.CAN_FD.value:
+    if CP.flags & ToyotaFlags.CAN_FD.value:
+      self.tss3_gear_packet = "GEAR_PACKET_HYBRID"
+      self.shifter_values = can_define.dv[self.tss3_gear_packet]["GEAR"]
+    elif CP.flags & ToyotaFlags.SECOC.value:
       self.shifter_values = can_define.dv["GEAR_PACKET_HYBRID"]["GEAR"]
     else:
       self.shifter_values = can_define.dv["GEAR_PACKET"]["GEAR"]
@@ -90,11 +94,16 @@ class CarState(CarStateBase):
     self.has_can_filter = self.FPCP.flags & ToyotaStarPilotFlags.RADAR_CAN_FILTER.value
     self.has_SDSU = self.FPCP.flags & ToyotaStarPilotFlags.SMART_DSU.value
     self.has_ZSS = self.FPCP.flags & ToyotaStarPilotFlags.ZSS.value
-    self.auto_brake_hold = bool(self.CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value)
+    self.auto_brake_hold = bool(
+      self.CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value and
+      getattr(self.CP, "alternativeExperience", 0) & ALTERNATIVE_EXPERIENCE.ALLOW_AEB
+    )
     self.pre_collision_2 = {}
 
-    self.tss3_accel_template: bytes | None = None
-    self.tss3_camera_accel = 0.0
+    self.tss3_cruise_button = 0
+    self.tss3_lta_switch_state = None
+    self.tss3_brake_module = None
+    self.tss3_lkas_hud = {}
 
   def update(self, can_parsers, starpilot_toggles) -> structs.CarState:
     if self.CP.flags & ToyotaFlags.CAN_FD.value:
@@ -302,54 +311,97 @@ class CarState(CarStateBase):
 
     return ret, fp_ret
 
-  def update_tss3(self, can_parsers, starpilot_toggles):
-    """Decode the measured TSS 3.0 Corolla state and retain camera 0x160."""
-    cp = can_parsers[Bus.pt]
-    cp_cam = can_parsers[Bus.cam]
-    ret = structs.CarState()
-    fp_ret = custom.StarPilotCarState.new_message()
-
+  def _update_tss3_common(self, ret, cp, source_cp, starpilot_toggles):
+    self.tss3_brake_module = copy.copy(cp.vl["BRAKE_MODULE"])
+    ret.brakePressed = self.tss3_brake_module["BRAKE_PRESSED"] != 0
+    ret.gasPressed = cp.vl["GAS_PEDAL"]["GAS_PEDAL_USER"] > 0
     self.parse_wheel_speeds(ret,
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_FL"],
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_FR"],
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RL"],
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RR"],
     )
-    ret.vEgoCluster = ret.vEgo * starpilot_toggles.cluster_offset
+    ret.vEgoCluster = cp.vl["BODY_CONTROL_STATE_2"]["UI_SPEED"] * CV.KPH_TO_MS * starpilot_toggles.cluster_offset
     ret.standstill = abs(ret.vEgoRaw) < 1e-3
-    ret.steeringAngleDeg = cp.vl["STEER_ANGLE_ACC_STATUS"]["STEER_ANGLE"]
-    ret.steeringRateDeg = 0.0
-    ret.yawRate = cp.vl["KINEMATICS"]["YAW_RATE"]
+    ret.vehicleSensorsInvalid = any(cp.vl["WHEEL_SPEEDS"][f"WHEEL_SPEED_{wheel}_FAULT"]
+                                    for wheel in ("FL", "FR", "RL", "RR"))
 
-    # The four 0xDA torque fields have not been assigned to driver/EPS roles.
-    ret.steeringTorque = cp.vl["STEER_TORQUE_SENSOR"]["TORQUE_1"]
-    ret.steeringTorqueEps = cp.vl["STEER_TORQUE_SENSOR"]["TORQUE_2"]
-    ret.steeringPressed = False
-    ret.brakePressed = cp.vl["BRAKE_MODULE"]["BRAKE_PRESSED"] != 0
-    ret.gasPressed = cp.vl["GAS_PEDAL"]["GAS_PEDAL_USER"] != 0
-    ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(int(cp.vl["GEAR_PACKET"]["GEAR"]), None))
+    ret.steeringAngleDeg = cp.vl["STEER_ANGLE_SENSOR"]["STEER_ANGLE"] + cp.vl["STEER_ANGLE_SENSOR"]["STEER_FRACTION"]
+    ret.steeringRateDeg = cp.vl["STEER_ANGLE_SENSOR"]["STEER_RATE"]
+    ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(int(cp.vl[self.tss3_gear_packet]["GEAR"]), None))
 
-    acc_state = int(cp.vl["STEER_ANGLE_ACC_STATUS"]["ACC_STATE"])
-    ret.cruiseState.available = acc_state != 0
-    ret.cruiseState.enabled = bool(cp.vl["STEER_ANGLE_ACC_STATUS"]["ACC_ENGAGED"])
-    ret.cruiseState.standstill = bool(cp.vl["STEER_ANGLE_ACC_STATUS"]["ACC_STANDSTILL"])
-    ret.cruiseState.speed = cp.vl["ACC_HUD"]["SET_SPEED"] * CV.MPH_TO_MS
+    ret.leftBlinker = cp.vl["BLINKERS_STATE"]["TURN_SIGNALS"] == 1
+    ret.rightBlinker = cp.vl["BLINKERS_STATE"]["TURN_SIGNALS"] == 2
+    ret.doorOpen = any(cp.vl["BODY_CONTROL_STATE"][door] for door in
+                       ("DOOR_OPEN_FL", "DOOR_OPEN_FR", "DOOR_OPEN_RL", "DOOR_OPEN_RR"))
+    ret.seatbeltUnlatched = cp.vl["BODY_CONTROL_STATE"]["SEATBELT_DRIVER_UNLATCHED"] != 0
+    ret.parkingBrake = cp.vl["BODY_CONTROL_STATE"]["PARKING_BRAKE"] == 1
+    ret.brakeHoldActive = cp.vl["ESP_CONTROL"]["BRAKE_HOLD_ACTIVE"] == 1
+    ret.espDisabled = cp.vl["ESP_CONTROL"]["TC_DISABLED"] != 0
+    ret.genericToggle = bool(cp.vl["LIGHT_STALK"]["AUTO_HIGH_BEAM"])
 
-    ret.doorOpen = False
-    ret.seatbeltUnlatched = False
-    ret.leftBlinker = False
-    ret.rightBlinker = False
-    ret.steerFaultTemporary = False
+    driver_torque_invalid = cp.vl["TSS3_EPS_TELEMETRY"]["DRIVER_TORQUE_INVALID"] != 0
+    ret.vehicleSensorsInvalid = ret.vehicleSensorsInvalid or driver_torque_invalid
+    ret.steeringTorque = (cp.vl["TSS3_EPS_TELEMETRY"]["STEERING_WHEEL_TORQUE_COARSE"] +
+                          cp.vl["TSS3_EPS_TELEMETRY"]["STEERING_WHEEL_TORQUE_FINE"]) if not driver_torque_invalid else 0.0
+    ret.steeringTorqueEps = 0.0
+    ret.steeringPressed = abs(ret.steeringTorque) >= TSS3_STEER_DRIVER_TORQUE_THRESHOLD
+    ret.steerFaultTemporary = bool(cp.vl["TSS3_EPS_TELEMETRY"]["EPS_FAULT_INHIBIT"])
     ret.steerFaultPermanent = False
-    ret.buttonEvents = []
 
-    self.secoc_synchronization = copy.copy(cp.vl["SECOC_SYNCHRONIZATION"])
-    if cp_cam.can_valid:
-      adas = cp_cam.vl["ADAS_ACC_REQUEST"]
-      self.tss3_accel_template = bytes(int(adas[f"BYTE{k:02d}"]) & 0xFF for k in range(32))
-      self.tss3_camera_accel = float(adas["ACCEL_REQ"])
+    if self.CP.enableBsm:
+      ret.leftBlindspot = bool(source_cp.vl["BSM"]["L_ADJACENT"] or source_cp.vl["BSM"]["L_APPROACHING"])
+      ret.rightBlindspot = bool(source_cp.vl["BSM"]["R_ADJACENT"] or source_cp.vl["BSM"]["R_APPROACHING"])
+
+  def update_tss3(self, can_parsers, starpilot_toggles):
+    """Decode Corolla state from bus 0 and the camera/source plane on bus 2."""
+    cp = can_parsers[Bus.pt]
+    source_cp = can_parsers[Bus.cam]
+    ret = structs.CarState()
+    fp_ret = custom.StarPilotCarState.new_message()
+
+    if source_cp.vl_all["TSS3_LKAS_HUD"]["BYTE_0"]:
+      self.tss3_lkas_hud = copy.copy(source_cp.vl["TSS3_LKAS_HUD"])
+    self._update_tss3_common(ret, cp, source_cp, starpilot_toggles)
+
+    switch = cp.vl["TSS3_CRUISE_SWITCH"]
+    previous_button = self.tss3_cruise_button
+    if switch["CANCEL_BUTTON"] and not switch["CANCEL_BUTTON_MIRROR_N"]:
+      self.tss3_cruise_button = 1
+    elif switch["SET_BUTTON"] and not switch["SET_BUTTON_MIRROR_N"]:
+      self.tss3_cruise_button = 2
+    elif switch["RES_BUTTON"] and not switch["RES_BUTTON_MIRROR_N"]:
+      self.tss3_cruise_button = 3
+    elif switch["MAIN_BUTTON"]:
+      self.tss3_cruise_button = 4
     else:
-      self.tss3_accel_template = None
+      self.tss3_cruise_button = 0
+    ret.buttonEvents = create_button_events(self.tss3_cruise_button, previous_button, {
+      1: ButtonType.cancel,
+      2: ButtonType.decelCruise,
+      3: ButtonType.accelCruise,
+      4: ButtonType.mainCruise,
+    })
+
+    hud_mode = int(self.tss3_lkas_hud.get("BYTE_0", 0))
+    lta_switch_state = hud_mode in (0x12, 0x14) if hud_mode in (0x10, 0x12, 0x14) else None
+    if (self.tss3_lta_switch_state is not None and lta_switch_state is not None and
+        lta_switch_state != self.tss3_lta_switch_state):
+      ret.buttonEvents.extend(create_button_events(1, 0, {1: ButtonType.lkas}) +
+                              create_button_events(0, 1, {1: ButtonType.lkas}))
+    if lta_switch_state is not None:
+      self.tss3_lta_switch_state = lta_switch_state
+
+    request = source_cp.vl["TSS3_CONTROL_REQUEST"]
+    ret.cruiseState.enabled = bool(request["CRUISE_OPERATING_LATCH"])
+    ret.cruiseState.standstill = ret.cruiseState.enabled and bool(request["DELAYED_HOLD_STATE"])
+    ret.cruiseState.available = bool(source_cp.vl["TSS3_CRUISE_DISPLAY"]["CRUISE_MAIN_STATE"])
+    set_speed_kph = float(request["SET_SPEED"])
+    ret.cruiseState.speed = set_speed_kph * CV.KPH_TO_MS if set_speed_kph > 0 else 0.0
+    cluster_set_speed = float(source_cp.vl["TSS3_CRUISE_DISPLAY"]["UI_SET_SPEED"])
+    if ret.cruiseState.speed != 0 and cluster_set_speed > 0:
+      is_metric = cp.vl["BODY_CONTROL_STATE_2"]["UNITS"] in (1, 2)
+      ret.cruiseState.speedCluster = cluster_set_speed * (CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS)
 
     return ret, fp_ret
 
@@ -357,21 +409,30 @@ class CarState(CarStateBase):
   def get_can_parsers(CP):
     if CP.flags & ToyotaFlags.CAN_FD.value:
       pt_messages = [
-        ("WHEEL_SPEEDS", 80),
-        ("STEER_ANGLE_ACC_STATUS", 40),
-        ("STEER_ANGLE_SENSOR", float('nan')),
-        ("KINEMATICS", float('nan')),
-        ("STEER_TORQUE_SENSOR", 42),
+        ("STEER_ANGLE_SENSOR", 100),
+        ("TSS3_EPS_TELEMETRY", 100),
+        ("WHEEL_SPEEDS", 100),
         ("BRAKE_MODULE", 50),
-        ("GEAR_PACKET", float('nan')),
-        ("SECOC_SYNCHRONIZATION", 10),
-        ("ACC_CONTROL", 20),
-        ("GAS_PEDAL", 42),
-        ("ACC_HUD", float('nan')),
+        ("GAS_PEDAL", 40),
+        ("GEAR_PACKET_HYBRID", 50),
+        ("TSS3_READY_STATUS", 1),
+        ("ESP_CONTROL", 3),
+        ("BLINKERS_STATE", 1),
+        ("BODY_CONTROL_STATE", 3),
+        ("LIGHT_STALK", 1),
+        ("TSS3_CRUISE_SWITCH", 30),
+        ("BODY_CONTROL_STATE_2", 3),
       ]
+      source_messages = [
+        ("TSS3_CONTROL_REQUEST", 40),
+        ("TSS3_CRUISE_DISPLAY", 1),
+        ("TSS3_LKAS_HUD", 1),
+      ]
+      if CP.enableBsm:
+        source_messages.append(("BSM", 1))
       return {
-        Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, TSS3_PT_BUS),
-        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [("ADAS_ACC_REQUEST", 40)], 2),
+        Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
+        Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], source_messages, 2),
       }
 
     pt_messages = [
@@ -390,7 +451,8 @@ class CarState(CarStateBase):
     if CP.carFingerprint in DISTANCE_BUTTON_CAR:
       pt_messages.append(("PCM_CRUISE_4", 1))
 
-    if CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value:
+    if (CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value and
+        getattr(CP, "alternativeExperience", 0) & ALTERNATIVE_EXPERIENCE.ALLOW_AEB):
       cam_messages.append(("PRE_COLLISION_2", 50))
 
     return {

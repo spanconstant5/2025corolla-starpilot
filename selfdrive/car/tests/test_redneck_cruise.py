@@ -26,13 +26,13 @@ ButtonType = car.CarState.ButtonEvent.Type
 
 class TestRedneckCruise(unittest.TestCase):
   def setUp(self):
-    self.CP = SimpleNamespace()
+    self.CP = SimpleNamespace(pcmCruise=False, openpilotLongitudinalControl=False)
     self.FPCP = SimpleNamespace(pcmCruiseSpeed=False, redneckCruiseAvailable=True)
     self.redneck = RedneckCruise(self.CP, self.FPCP)
 
-  def _new_state(self, speed_cluster_mph=20.0, button_events=None):
+  def _new_state(self, speed_cluster_mph=20.0, button_events=None, cruise_enabled=True):
     return SimpleNamespace(
-      cruiseState=SimpleNamespace(speedCluster=speed_cluster_mph * CV.MPH_TO_MS),
+      cruiseState=SimpleNamespace(speedCluster=speed_cluster_mph * CV.MPH_TO_MS, enabled=cruise_enabled),
       buttonEvents=button_events or [],
     )
 
@@ -143,6 +143,21 @@ class TestRedneckCruise(unittest.TestCase):
         send_button, _ = self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0, **kwargs)
         self.assertEqual(SEND_BUTTON_NONE, send_button)
 
+  def test_stock_scc_only_sends_buttons_while_engaged(self):
+    self.CP.pcmCruise = True
+    frames = int(INCREASE_INACTIVE_TIMER / DT_CTRL) + 4
+    for _ in range(frames):
+      send_button, _ = self.redneck.run(self._new_state(cruise_enabled=False), self._new_control(),
+                                        25.0 * CV.MPH_TO_MS, is_metric=False)
+      self.assertEqual(SEND_BUTTON_NONE, send_button)
+
+    send_button, _ = self._run_until_active(target_mph=25.0)
+    self.assertEqual(SEND_BUTTON_INCREASE, send_button)
+
+    send_button, _ = self.redneck.run(self._new_state(cruise_enabled=False), self._new_control(),
+                                      25.0 * CV.MPH_TO_MS, is_metric=False)
+    self.assertEqual(SEND_BUTTON_NONE, send_button)
+
   def test_resets_when_pcm_cruise_speed_is_enabled(self):
     self.FPCP.pcmCruiseSpeed = True
     send_button, v_target = self._run_until_active(target_mph=25.0, speed_cluster_mph=20.0)
@@ -217,6 +232,38 @@ class TestRedneckCruise(unittest.TestCase):
     self.assertAlmostEqual(55.0 * CV.MPH_TO_MS * 1.01 + 1.5, target_speed)
     self.assertTrue(lead_present)
 
+  def test_card_does_not_treat_untracked_cruise_lead_as_longitudinal_adjustment(self):
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": True}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {
+      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "longitudinalPlan": SimpleNamespace(shouldStop=False, longitudinalPlanSource="cruise"),
+      "radarState": SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=85.0, vRel=-0.5)),
+    }.__getitem__
+    car_state = SimpleNamespace()
+    card = SimpleNamespace(sm=sm, CI=SimpleNamespace(CS=car_state))
+
+    Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=True)))
+
+    self.assertTrue(car_state.openpilot_lead_visible)
+    self.assertFalse(car_state.openpilot_longitudinal_adjustment_active)
+
+  def test_card_marks_stop_plan_as_longitudinal_adjustment_without_lead(self):
+    sm = MagicMock()
+    sm.seen = {"starpilotPlan": True, "longitudinalPlan": True, "radarState": False}
+    sm.valid = sm.seen.copy()
+    sm.__getitem__.side_effect = {
+      "starpilotPlan": SimpleNamespace(trackingLead=False),
+      "longitudinalPlan": SimpleNamespace(shouldStop=True, longitudinalPlanSource="e2e"),
+    }.__getitem__
+    car_state = SimpleNamespace()
+    card = SimpleNamespace(sm=sm, CI=SimpleNamespace(CS=car_state))
+
+    Car._update_openpilot_lead_state(card, SimpleNamespace(hudControl=SimpleNamespace(leadVisible=False)))
+
+    self.assertTrue(car_state.openpilot_longitudinal_adjustment_active)
+
   def test_card_target_speed_uses_slc_target_with_longitudinal_control(self):
     slc_target = 80.0 * CV.KPH_TO_MS
     starpilot_plan = SimpleNamespace(
@@ -265,7 +312,6 @@ class TestRedneckCruise(unittest.TestCase):
       starpilot_toggles=SimpleNamespace(
         speed_limit_controller=True,
         redneck_cruise=True,
-        speed_limit_controller_override_set_speed=True,
       ),
     )
     car_state = SimpleNamespace(

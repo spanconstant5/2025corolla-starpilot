@@ -8,6 +8,37 @@ from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.hyundai.values import HyundaiFlags, CAR, CANFD_ALT_BUTTONS_RESUME_CAR
 
 
+_adrv_0x51_templates: dict[CAR, bytes] = {}
+
+
+def cache_adrv_0x51_template(car_fingerprint: CAR, dat: bytes | None) -> None:
+  if car_fingerprint not in (CAR.KIA_EV6, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN):
+    return
+
+  if dat is None:
+    _adrv_0x51_templates.pop(car_fingerprint, None)
+  elif len(dat) == 32 and any(dat[3:]):
+    _adrv_0x51_templates[car_fingerprint] = bytes(dat)
+
+
+def create_adrv_0x51(packer, CAN, frame: int, car_fingerprint: CAR | None = None, drive_gear: bool = False,
+                     v_ego: float | None = None):
+  template = _adrv_0x51_templates.get(car_fingerprint)
+  if template is None:
+    return packer.make_can_msg("ADRV_0x51", CAN.ACAN, {})
+
+  dat = bytearray(template)
+  dat[2] = (template[2] + frame + 1) & 0xFF
+  dat[3] = (dat[3] & ~0x1) | int(drive_gear)
+  if car_fingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and v_ego is not None and np.isfinite(v_ego):
+    speed_raw = int(np.clip(round(v_ego * 100.0), 0, 65534))
+    dat[8:10] = speed_raw.to_bytes(2, "little")
+  crc = hkg_can_fd_checksum(0x51, None, dat)
+  dat[0] = crc & 0xFF
+  dat[1] = (crc >> 8) & 0xFF
+  return CanData(0x51, bytes(dat), CAN.ACAN)
+
+
 def _set_value(msg: bytearray, sig, ival: int) -> None:
   i = sig.lsb // 8
   bits = sig.size
@@ -123,7 +154,12 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   else:
     lkas_values = copy.copy(control_values)
     lkas_values["LKA_AVAILABLE"] = 0
-    if CP.carFingerprint in (CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025, CAR.KIA_CARNIVAL_HEV_4TH_GEN):
+    if CP.carFingerprint in (
+      CAR.KIA_CARNIVAL_4TH_GEN,
+      CAR.KIA_CARNIVAL_2025,
+      CAR.KIA_CARNIVAL_HEV_4TH_GEN,
+      CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN,
+    ):
       lkas_values["DAMP_FACTOR"] = 100
 
   if lfa_base_values:
@@ -699,13 +735,13 @@ def create_ioniq_6_cluster_lane_change_messages(CAN, frame, side=None):
 
 def create_acc_control(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control,
                        main_mode_acc=1, jerk_lower=None, jerk_upper=None, direct_accel=False,
-                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None):
+                       lead_distance=None, lead_rel_speed=None, lead_visible=None, cruise_info=None, raw_accel=None):
   jerk = 5
   jn = jerk / 50
   if not enabled or gas_override:
     a_val, a_raw = 0, 0
   elif direct_accel:
-    a_raw = accel
+    a_raw = accel if raw_accel is None else raw_accel
     a_val = accel
   else:
     a_raw = accel
@@ -783,15 +819,14 @@ def create_fca_warning_light(packer, CAN, frame):
   return ret
 
 
-def create_adrv_messages(packer, CAN, frame, blended_hda2=False):
+def create_adrv_messages(packer, CAN, frame, blended_hda2=False, car_fingerprint=None, drive_gear=False,
+                         v_ego=None):
   # messages needed to car happy after disabling
   # the ADAS Driving ECU to do longitudinal control
 
   ret = []
 
-  values = {
-  }
-  ret.append(packer.make_can_msg("ADRV_0x51", CAN.ACAN, values))
+  ret.append(create_adrv_0x51(packer, CAN, frame, car_fingerprint, drive_gear, v_ego))
 
   if blended_hda2:
     return ret

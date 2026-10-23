@@ -134,11 +134,19 @@ def soundd_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggl
 
 
 def wheel_controls_enabled(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return params.get_bool("WheelControlsEnabled")
+  return params.get_bool("WheelControlsEnabled") or (
+    params.get_bool("ScreenManagement") and params.get_bool("StandbyMode") and params.get_bool("StandbyWakeButton")
+  )
 
 
 def run_v_asm(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and getattr(starpilot_toggles, "v_asm_enabled", False)
+
+
+def run_stinger_object_shadow(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return (started and not CP.notCar and CP.carFingerprint == "KIA_STINGER_2022" and
+          params.get_bool("StingerObjectShadow") and not params.get_bool("DisableLogging") and
+          not getattr(starpilot_toggles, "no_logging", False))
 
 
 def big_device_ui_process() -> NativeProcess:
@@ -229,6 +237,7 @@ procs += [
   PythonProcess("speed_limit_filler", "starpilot.system.speed_limit_filler", run_speed_limit_filler, nice=19),
   PythonProcess("speed_limit_vision", "starpilot.system.speed_limit_vision", run_speed_limit_vision, nice=19),
   PythonProcess("adj_spot_monitor_vision", "starpilot.system.adj_spot_monitor_vision", run_v_asm, nice=19),
+  PythonProcess("stinger_object_shadow", "starpilot.system.stinger_object_shadow", run_stinger_object_shadow, nice=19),
 ]
 
 managed_processes = {p.name: p for p in procs}

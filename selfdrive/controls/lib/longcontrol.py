@@ -161,12 +161,16 @@ class LongControl:
     if not preserve_stop_release:
       self.stop_release_counter = 0
 
-  def _stop_release_ready(self, CS, a_target, should_stop, has_lead, starpilot_toggles):
+  def _stop_release_ready(self, CS, a_target, should_stop, has_lead, starpilot_toggles, leads=None):
     if self.long_control_state != LongCtrlState.stopping:
       self.stop_release_counter = 0
       return True
 
     if should_stop or CS.brakePressed:
+      self.stop_release_counter = 0
+      return False
+
+    if self.vehicle_tuning.hold_toyota_corolla_for_stopped_lead(CS.vEgo, leads):
       self.stop_release_counter = 0
       return False
 
@@ -247,7 +251,9 @@ class LongControl:
       )
 
     previous_long_control_state = self.long_control_state
-    allow_stopping_release = self._stop_release_ready(CS, a_target, should_stop, has_lead, starpilot_toggles)
+    allow_stopping_release = self._stop_release_ready(
+      CS, a_target, should_stop, has_lead, starpilot_toggles, leads=leads,
+    )
     self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
                                                        should_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill, starpilot_toggles,
@@ -262,7 +268,7 @@ class LongControl:
         output_accel = min(output_accel, 0.0)
         output_accel -= starpilot_toggles.stoppingDecelRate * DT_CTRL
       output_accel = self.vehicle_tuning.shape_stopping_accel(
-        output_accel, a_target, should_stop, CS.vEgo, has_lead, starpilot_toggles.stopAccel,
+        output_accel, a_target, should_stop, CS.vEgo, has_lead, starpilot_toggles.stopAccel, leads=leads,
       )
       output_accel = self._apply_moving_stop_target_follow(output_accel, a_target, should_stop, CS, starpilot_toggles)
       self.reset(preserve_stop_release=True)

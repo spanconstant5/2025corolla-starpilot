@@ -62,15 +62,15 @@ const VEHICLE_SETTING_MAKES = {
   RemoteStartBootsComma: ["Buick", "Cadillac", "Chevrolet", "GMC", "Holden"],
   HKGRemoteStartBootsComma: ["Genesis", "Hyundai", "Kia"],
   VoltSNG: ["Chevrolet", "Holden"],
-  GMAutoHold: ["Chevrolet", "Holden"],
+  GMAutoHold: ["Buick", "Chevrolet", "Holden"],
   VoltOnePedalMode: ["Chevrolet", "Holden"],
   RemapCancelToDistance: ["Chevrolet", "Holden"],
   JeepBrakeHold: ["Jeep"],
   SubaruSNG: ["Subaru"],
   SubaruSNGManualParkingBrake: ["Subaru"],
   SubaruStopStartOff: ["Subaru"],
+  SubaruAvhStartup: ["Subaru"],
   SubaruRedneckCruise: ["Subaru"],
-  ClusterOffset: ["Lexus", "Toyota"],
   SNGHack: ["Lexus", "Toyota"],
   ToyotaAutoHold: ["Lexus", "Toyota"],
 }
@@ -100,6 +100,7 @@ export function matchesSettingValueCondition(param, values) {
 // Any structural reason a param must not be shown (regardless of dev mode).
 function isHiddenByConditions(section, param, values) {
   if (HIDDEN_SETTING_KEYS.has(param.key) || !isVehicleSettingVisible(section, param, values) || !matchesSettingValueCondition(param, values)) return true
+  if (param.visible_when_all_true?.some((key) => !values[key])) return true
   if (param.requires_capability && !values[param.requires_capability]) return true
   if (RADAR_REQUIRED_KEYS.has(param.key) && !values.HasRadar) return true
   if (param.key === "AlphaLongitudinalEnabled" && !values.AlphaLongitudinalAvailable) return true
@@ -140,8 +141,11 @@ export function numericBounds(param, values = {}) {
     const n = Number(value)
     return Number.isFinite(n) ? n : null
   }
-  if (param.key === "ScreenBrightness" || param.key === "ScreenBrightnessOnroad") {
+  if (param.key === "ScreenBrightness") {
     return { min: 1, max: 101, step: 1 }
+  }
+  if (param.key === "ScreenBrightnessOnroad") {
+    return { min: 0, max: 101, step: 1 }
   }
   if (param.key === "LaneCenterOffset") {
     return { min: -0.3, max: 0.3, step: 0.01 }

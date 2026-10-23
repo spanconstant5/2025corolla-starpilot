@@ -1,4 +1,6 @@
 import pytest
+import math
+from collections import deque
 from parameterized import parameterized
 from types import SimpleNamespace
 
@@ -8,6 +10,7 @@ import openpilot.selfdrive.controls.lib.latcontrol_pid as latcontrol_pid
 import openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes as latcontrol_vehicle_tunes
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.car.lateral import get_friction
 from opendbc.car.chrysler.values import CAR as CHRYSLER
 from opendbc.car.honda.values import CAR as HONDA, HondaFlags
 from opendbc.car.toyota.values import CAR as TOYOTA
@@ -20,6 +23,7 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.latcontrol_angle import (
   LatControlAngle,
   _ascent_angle_tracking_target,
+  _ascent_low_speed_angle_target,
 )
 from openpilot.selfdrive.controls.lib.latcontrol_pid import (
   LatControlPID,
@@ -33,6 +37,8 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   get_hkg_canfd_base_friction_threshold,
   get_ioniq_6_2025_low_speed_center_error_scale,
   get_ioniq_6_2025_low_speed_center_friction_scale,
+  get_kona_ev_2022_center_output_scale,
+  get_kona_ev_2022_friction_threshold,
   get_kona_non_scc_center_taper_scale,
   get_kona_non_scc_friction_threshold,
   get_kona_non_scc_highway_transition_output_scale,
@@ -54,7 +60,9 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   get_rav4_tss2_pid_output,
   get_subaru_impreza_pid_output_scale,
   get_genesis_gv70_low_speed_center_overshoot_scale,
-  get_genesis_g70_high_speed_transition_scale,
+  get_genesis_gv70_stabilized_output,
+  get_genesis_g70_stabilized_output,
+  get_genesis_g70_center_measurement_damping_gain,
   normalize_flm_overrides,
   set_flm_runtime_overrides,
 )
@@ -86,7 +94,6 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_genesis_g90_friction_scale,
   get_genesis_g90_friction_threshold,
   get_genesis_g70_center_output_scale,
-  get_genesis_g70_curve_unwind_output_scale,
   get_genesis_g70_angle_output_scale,
   get_genesis_g70_friction_jerk_deadzone,
   get_genesis_g70_friction_threshold,
@@ -161,6 +168,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_kia_carnival_friction_threshold,
   get_kia_carnival_highway_transition_output_scale,
   get_kia_carnival_unwind_ff_scale,
+  get_kia_carnival_unwind_output_scale,
   get_kia_stinger_2022_center_taper_scale,
   get_kia_stinger_2022_friction_threshold,
   get_tucson_4th_gen_center_taper_scale,
@@ -201,8 +209,18 @@ class TestLatControl:
   def test_ascent_angle_tracking_correction_is_bounded_and_handoff_safe(self):
     assert _ascent_angle_tracking_target(10.0, 0.0, 20.0, False) == pytest.approx(12.5)
     assert _ascent_angle_tracking_target(40.0, 0.0, 20.0, False) == pytest.approx(48.0)
-    assert _ascent_angle_tracking_target(10.0, 0.0, 4.0, False) == pytest.approx(10.0)
+    assert _ascent_angle_tracking_target(10.0, 0.0, 9.0, False) == pytest.approx(10.0)
+    assert 10.0 < _ascent_angle_tracking_target(10.0, 0.0, 12.0, False) < 12.5
+    assert _ascent_angle_tracking_target(40.0, 0.0, 4.0, False) == pytest.approx(48.0)
     assert _ascent_angle_tracking_target(10.0, 0.0, 20.0, True) == pytest.approx(10.0)
+
+  def test_ascent_low_speed_filter_is_center_gated_and_handoff_safe(self):
+    filtered = _ascent_low_speed_angle_target(10.0, 0.0, 4.0, False, DT_CTRL)
+
+    assert 0.0 < filtered < 10.0
+    assert _ascent_low_speed_angle_target(10.0, 0.0, 10.0, False, DT_CTRL) == pytest.approx(10.0)
+    assert _ascent_low_speed_angle_target(40.0, 0.0, 4.0, False, DT_CTRL) == pytest.approx(40.0)
+    assert _ascent_low_speed_angle_target(10.0, 0.0, 4.0, True, DT_CTRL) == pytest.approx(10.0)
 
   def test_torque_log_exposes_friction_controller_state(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(GM.CHEVROLET_BOLT_ACC_2022_2023)
@@ -244,6 +262,13 @@ class TestLatControl:
   def _build_pid_controller(car_name):
     CarInterface = interfaces[car_name]
     CP = CarInterface.get_non_essential_params(car_name)
+    if car_name == TOYOTA.TOYOTA_RAV4_TSS2:
+      CP.lateralTuning.init('pid')
+      CP.lateralTuning.pid.kpBP = [0.0]
+      CP.lateralTuning.pid.kpV = [0.6]
+      CP.lateralTuning.pid.kiBP = [0.0]
+      CP.lateralTuning.pid.kiV = [0.1]
+      CP.lateralTuning.pid.kf = 0.00007818594
     CP.dashcamOnly = True
     CI = CarInterface(CP, custom.StarPilotCarParams.new_message())
     controller = LatControlPID(CP.as_reader(), CI, DT_CTRL)
@@ -742,6 +767,18 @@ class TestLatControl:
     low_speed_exit = get_kia_carnival_unwind_ff_scale(0.31, 0.43, -0.88, 11.0)
     assert low_speed_exit < 0.90
 
+  def test_kia_carnival_unwind_output_scale_is_bounded_and_phase_gated(self):
+    steady_turn = get_kia_carnival_unwind_output_scale(0.80, 0.90, 0.60, 11.0)
+    clean_unwind = get_kia_carnival_unwind_output_scale(0.20, 0.20, -1.5, 11.0)
+    overshooting_unwind = get_kia_carnival_unwind_output_scale(0.20, 0.90, -1.5, 11.0)
+    high_speed_overshoot = get_kia_carnival_unwind_output_scale(0.20, 0.90, -1.5, 25.0)
+
+    assert steady_turn == pytest.approx(1.0)
+    assert clean_unwind == pytest.approx(1.0)
+    assert 0.70 < overshooting_unwind < 1.0
+    assert overshooting_unwind < 0.80
+    assert high_speed_overshoot > overshooting_unwind
+
   def test_genesis_g90_ff_scale_curve(self):
     assert get_genesis_g90_ff_scale(0.0, 0.0, 20.0) == 1.0
     assert get_genesis_g90_ff_scale(0.5, 0.0, 20.0) > get_genesis_g90_ff_scale(-0.5, 0.0, 20.0)
@@ -771,9 +808,13 @@ class TestLatControl:
     assert base > left_unwind > right_unwind
 
   def test_genesis_gv70_unwind_ff_scale(self):
-    assert get_genesis_gv70_unwind_ff_scale(-0.3, -0.3, 0.8, 15.0) == 1.0
+    steady_unwind = get_genesis_gv70_unwind_ff_scale(-0.3, -0.3, 0.8, 15.0)
+    assert steady_unwind < 1.0
     assert get_genesis_gv70_unwind_ff_scale(-0.3, 0.1, 0.8, 15.0) == 1.0
+    assert get_genesis_gv70_unwind_ff_scale(-0.3, -0.3, -0.8, 15.0) == 1.0
 
+    early_unwind = get_genesis_gv70_unwind_ff_scale(-0.7, -0.6, 0.8, 15.0)
+    assert early_unwind == 1.0
     reduced = get_genesis_gv70_unwind_ff_scale(-0.2, -1.0, 1.0, 20.0)
     assert 0.6 < reduced < 1.0
     assert get_genesis_gv70_unwind_ff_scale(-0.2, -1.0, -1.0, 20.0) == 1.0
@@ -917,18 +958,58 @@ class TestLatControl:
 
   def test_genesis_gv70_high_speed_error_damping(self):
     assert get_genesis_gv70_high_speed_error_scale(0.2, 0.2, 0.8, 20.0) == 1.0
-    assert get_genesis_gv70_high_speed_error_scale(-0.7, 0.58, -0.8, 33.5) < 1.0
-    assert get_genesis_gv70_high_speed_error_scale(-0.7, 0.58, -0.8, 20.0) > \
-      get_genesis_gv70_high_speed_error_scale(-0.7, 0.58, -0.8, 33.5)
+    assert get_genesis_gv70_high_speed_error_scale(-0.7, 0.58, -0.8, 33.5) == 1.0
+    assert get_genesis_gv70_high_speed_error_scale(-0.7, -0.95, 0.8, 20.0) > \
+      get_genesis_gv70_high_speed_error_scale(-0.7, -0.95, 0.8, 33.5)
 
   def test_genesis_gv70_reversal_damping_is_medium_speed_and_phase_gated(self):
     same_direction = get_genesis_gv70_reversal_output_scale(0.7, 0.9, 0.8, 16.0)
-    low_speed = get_genesis_gv70_reversal_output_scale(-0.7, 0.7, -0.8, 8.0)
-    route_speed = get_genesis_gv70_reversal_output_scale(-0.7, 0.7, -0.8, 15.0)
+    low_speed = get_genesis_gv70_reversal_output_scale(-0.7, -1.0, 0.8, 8.0)
+    route_speed = get_genesis_gv70_reversal_output_scale(-0.7, -1.0, 0.8, 15.0)
 
     assert same_direction == pytest.approx(1.0)
     assert route_speed < 1.0
     assert route_speed < low_speed
+
+  @pytest.mark.parametrize("direction", [-1.0, 1.0])
+  def test_genesis_gv70_curve_damping_preserves_tracking_and_direction_changes(self, direction):
+    for scale in (get_genesis_gv70_unwind_ff_scale, get_genesis_gv70_high_speed_error_scale,
+                  get_genesis_gv70_reversal_output_scale):
+      for measured in (0.0, 0.55, 0.8, -0.8):
+        for jerk in (-0.8, 0.8):
+          assert scale(direction * 0.8, direction * measured, direction * jerk, 30.0) == 1.0
+      assert scale(direction * 0.8, direction * 1.1, -direction * 0.8, 30.0) < 1.0
+
+  def test_genesis_gv70_curve_damping_is_continuous_and_leaves_center_unchanged(self):
+    weight = latcontrol_vehicle_tunes._genesis_gv70_curve_damping_weight
+    for setpoint in (-0.25, 0.0, 0.25):
+      for measured in (-1.0, 0.0, 1.0):
+        assert weight(setpoint, measured) == 1.0
+    for setpoint in (-0.8, -0.55, -0.25, 0.25, 0.55, 0.8):
+      for measured in (setpoint - 0.2, setpoint, setpoint + 0.2):
+        assert 0.0 <= weight(setpoint, measured) <= 1.0
+        assert abs(weight(setpoint - 1e-7, measured) - weight(setpoint + 1e-7, measured)) < 2e-6
+        assert abs(weight(setpoint, measured - 1e-7) - weight(setpoint, measured + 1e-7)) < 2e-6
+
+  @pytest.mark.parametrize("direction", [-1.0, 1.0])
+  def test_genesis_gv70_undertracking_curve_keeps_undamped_feedforward(self, monkeypatch, direction):
+    def trace():
+      controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.GENESIS_GV70_ELECTRIFIED_1ST_GEN)
+      CS.vEgo = 30.0
+      CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(-direction * 0.6 / CS.vEgo ** 2, CS.vEgo, 0.0))
+      request = direction * 0.8 / CS.vEgo ** 2
+      controller.curvature_request_buffer = deque([request] * controller.request_buffer_len, maxlen=controller.request_buffer_len)
+      rows = []
+      for _ in range(100):
+        output, _, state = controller.update(True, CS, VM, params, False, request, False, 0.2, None, None, toggles)
+        rows.append((output, state.desiredLateralAccel, state.p, state.i, state.d, state.f))
+      return rows
+
+    actual = trace()
+    for name in ("get_genesis_gv70_unwind_ff_scale", "get_genesis_gv70_high_speed_error_scale",
+                 "get_genesis_gv70_reversal_output_scale"):
+      monkeypatch.setattr(latcontrol_torque, name, lambda *_args: 1.0)
+    assert actual == trace()
 
   def test_genesis_gv70_low_speed_center_overshoot_damping(self):
     center_overshoot = get_genesis_gv70_low_speed_center_overshoot_scale(0.02, 0.45, 22.0 * 0.44704)
@@ -961,14 +1042,6 @@ class TestLatControl:
     assert get_genesis_g70_low_speed_output_limit(0.0, 2.0) < 0.30
     assert get_genesis_g70_low_speed_angle_damping(0.0, -20.0, 0.0, 2.0) < 0.0
     assert get_genesis_g70_low_speed_angle_damping(0.0, 20.0, 0.0, 2.0) > 0.0
-    assert get_genesis_g70_high_speed_transition_scale(0.0, 0.8, 65.0 * 0.44704) < \
-      get_genesis_g70_high_speed_transition_scale(0.0, 0.1, 65.0 * 0.44704)
-    assert get_genesis_g70_high_speed_transition_scale(1.0, 0.8, 65.0 * 0.44704) > \
-      get_genesis_g70_high_speed_transition_scale(0.0, 0.8, 65.0 * 0.44704)
-    assert get_genesis_g70_high_speed_transition_scale(0.0, 0.8, 20.0 * 0.44704) > \
-      get_genesis_g70_high_speed_transition_scale(0.0, 0.8, 65.0 * 0.44704)
-    assert 0.90 < get_genesis_g70_curve_unwind_output_scale(0.7, -0.5, 25.0) < 1.0
-    assert get_genesis_g70_curve_unwind_output_scale(0.7, 0.5, 25.0) == 1.0
     assert get_genesis_g70_angle_output_scale(55.0, 1.0) > get_genesis_g70_angle_output_scale(85.0, 1.0)
     assert get_genesis_g70_angle_output_scale(85.0, -1.0) == pytest.approx(1.0)
     assert get_genesis_g70_friction_jerk_deadzone(25.0, 0.0) > 0.25
@@ -985,6 +1058,104 @@ class TestLatControl:
     assert get_genesis_g70_high_speed_error_scale(0.2, 0.9, 0.8, 10.0) > get_genesis_g70_high_speed_error_scale(0.2, 0.9, 0.8, 20.0)
     assert get_genesis_g70_high_speed_error_scale(0.7, 0.95, 0.8, 30.0) < \
       get_genesis_g70_high_speed_error_scale(0.7, 0.45, 0.8, 30.0)
+
+  def test_genesis_g70_output_stabilizer_releases_faster_than_it_builds(self):
+    high_speed = 65.0 * 0.44704
+    build = get_genesis_g70_stabilized_output(0.30, 0.10, 0.15, 0.10, 0.30, high_speed, DT_CTRL)
+    release = get_genesis_g70_stabilized_output(0.10, 0.30, 0.15, 0.30, -0.30, high_speed, DT_CTRL)
+    reversal = get_genesis_g70_stabilized_output(-0.20, 0.20, -0.15, 0.20, -0.30, high_speed, DT_CTRL)
+    low_speed = get_genesis_g70_stabilized_output(0.30, 0.10, 0.15, 0.10, 0.30, 5.0, DT_CTRL)
+
+    assert abs(release - 0.10) < abs(build - 0.30)
+    assert reversal < 0.20
+    assert low_speed == pytest.approx(0.30, abs=0.01)
+
+  def test_genesis_g70_output_stabilizer_update_path(self, monkeypatch):
+    calls = []
+
+    def stabilized_output(output_torque, prev_output_torque, desired_lateral_accel,
+                          measured_lateral_accel, desired_lateral_jerk, v_ego, dt):
+      calls.append((output_torque, prev_output_torque, desired_lateral_accel,
+                    measured_lateral_accel, desired_lateral_jerk, v_ego, dt))
+      return 0.123
+
+    monkeypatch.setattr(latcontrol_torque, "get_genesis_g70_stabilized_output", stabilized_output)
+    controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.GENESIS_G70_2020)
+    CS.vEgo = 25.0
+    output, _, lac_log = controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+
+    assert calls
+    assert lac_log.active
+    assert output == pytest.approx(-0.123)
+
+  @pytest.mark.parametrize("mph,desired,measured,jerk,expected", [
+    (65.0, 0.0, 0.10, 0.0, 0.09),
+    (50.0, 0.0, 0.10, 0.0, 0.0),
+    (55.0, 0.0, 0.10, 0.0, 0.045),
+    (65.0, 0.25, 0.10, 0.0, 0.045),
+    (65.0, 0.0, 0.25, 0.0, 0.045),
+    (65.0, 0.35, 0.10, 0.0, 0.0),
+    (65.0, 0.0, 0.35, 0.0, 0.0),
+    (65.0, 0.0, 0.10, 0.35, 0.045),
+    (65.0, 0.0, 0.10, 0.50, 0.0),
+  ])
+  def test_genesis_g70_center_measurement_damping_gates(self, mph, desired, measured, jerk, expected):
+    for direction in [-1.0, 1.0]:
+      gain = get_genesis_g70_center_measurement_damping_gain(
+        mph * 0.44704, desired * direction, measured * direction, jerk * direction,
+      )
+      assert gain == pytest.approx(expected)
+
+  @pytest.mark.parametrize("direction", [-1.0, 1.0])
+  def test_genesis_g70_center_measurement_damping_update_path(self, direction):
+    controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.GENESIS_G70_2020)
+    CS.vEgo = 65.0 * 0.44704
+    CS.steeringAngleDeg = 0.0
+    controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    CS.steeringAngleDeg = -direction * 0.5
+    output, _, moving_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert moving_log.d * direction < 0.0
+    assert abs(moving_log.d) <= 0.225
+    assert abs(output) <= controller.steer_max
+
+    for _ in range(150):
+      _, _, steady_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert steady_log.d == pytest.approx(0.0, abs=1e-6)
+
+    CS.steeringPressed = True
+    CS.steeringAngleDeg = 0.0
+    _, _, driver_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert driver_log.d == 0.0
+
+    CS.steeringPressed = False
+    controller.update(False, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    _, _, resumed_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert resumed_log.d == 0.0
+
+    CS.vEgo = 40.0 * 0.44704
+    CS.steeringAngleDeg = -direction * 0.5
+    _, _, low_speed_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert low_speed_log.d == 0.0
+
+    CS.vEgo = 65.0 * 0.44704
+    curvature = direction * 0.8 / CS.vEgo ** 2
+    controller.curvature_request_buffer = deque([curvature] * controller.request_buffer_len,
+                                               maxlen=controller.request_buffer_len)
+    _, _, curve_log = controller.update(True, CS, VM, params, False, curvature, False, 0.2, None, None, toggles)
+    assert curve_log.d == 0.0
+
+  @pytest.mark.parametrize("car_name", [HYUNDAI.GENESIS_GV70_1ST_GEN, HYUNDAI.KIA_EV6, HYUNDAI.HYUNDAI_IONIQ_6])
+  def test_genesis_g70_center_measurement_damping_does_not_change_other_cars(self, monkeypatch, car_name):
+    def unexpected_damping(*_args):
+      pytest.fail("G70 center damping reached another vehicle")
+
+    monkeypatch.setattr(latcontrol_torque, "get_genesis_g70_center_measurement_damping_gain", unexpected_damping)
+    controller, VM, CS, params, toggles = self._build_torque_controller(car_name)
+    CS.vEgo = 65.0 * 0.44704
+    controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert controller.pid.d == 0.0
 
   def test_sonata_hybrid_center_output_taper_is_mid_speed_and_center_gated(self):
     low_speed = get_sonata_hybrid_center_output_scale(0.0, 8.0)
@@ -1359,6 +1530,120 @@ class TestLatControl:
     assert base_output > 0.0
     assert tapered_output == pytest.approx(base_output)
 
+  def test_kona_ev_2022_center_cleanup_is_high_speed_and_center_gated(self):
+    low_speed_threshold = get_kona_ev_2022_friction_threshold(8.0, 0.0)
+    highway_base = get_standard_friction_threshold(27.0)
+    highway_threshold = get_kona_ev_2022_friction_threshold(27.0, 0.0)
+    highway_curve_threshold = get_kona_ev_2022_friction_threshold(27.0, 0.6)
+
+    assert low_speed_threshold == pytest.approx(get_standard_friction_threshold(8.0), abs=0.001)
+    assert highway_threshold > highway_base
+    assert highway_curve_threshold == pytest.approx(highway_base, abs=0.001)
+    assert get_kona_ev_2022_center_output_scale(0.0, 27.0) < 0.94
+    assert get_kona_ev_2022_center_output_scale(0.6, 27.0) == pytest.approx(1.0, abs=0.001)
+    assert get_kona_ev_2022_center_output_scale(0.0, 8.0) == pytest.approx(1.0, abs=0.002)
+
+  def test_kona_ev_2022_center_output_taper_update_path(self, monkeypatch):
+    monkeypatch.setattr(latcontrol_torque, "get_kona_ev_2022_center_output_scale", lambda *_args: 1.0)
+    controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.HYUNDAI_KONA_EV_2022)
+    CS.vEgo = 27.0
+    base_output, _, lac_log = controller.update(
+      True, CS, VM, params, False, 0.0005, False, 0.1, None, None, starpilot_toggles,
+    )
+
+    monkeypatch.setattr(latcontrol_torque, "get_kona_ev_2022_center_output_scale", lambda *_args: 0.5)
+    tapered_controller, tapered_VM, tapered_CS, tapered_params, tapered_toggles = self._build_torque_controller(
+      HYUNDAI.HYUNDAI_KONA_EV_2022,
+    )
+    tapered_CS.vEgo = 27.0
+    tapered_output, _, _ = tapered_controller.update(
+      True, tapered_CS, tapered_VM, tapered_params, False, 0.0005, False, 0.1, None, None, tapered_toggles,
+    )
+
+    assert controller.is_kona_ev_2022
+    assert lac_log.active
+    assert tapered_output == pytest.approx(base_output * 0.5)
+
+  @pytest.mark.parametrize("kph,desired,increment", [
+    (0.0, 0.0, 0.0),
+    (60.0, 0.0, 0.0),
+    (100.0, 0.0, 0.0),
+    (100.0, 0.65, 0.0),
+    (105.0, 0.0, 0.15),
+    (110.0, 0.0, 0.30),
+    (110.0, 0.65, 0.30),
+    (120.0, 0.0, 0.30),
+    (120.0, 0.65, 0.30),
+    (120.0, -0.65, 0.30),
+    (120.0, 1.15, 0.30),
+    (120.0, -1.15, 0.30),
+    (120.0, 1.6, 0.15),
+    (120.0, -1.6, 0.15),
+    (120.0, 2.0, 0.0),
+    (140.0, 0.0, 0.30),
+    (140.0, -2.0, 0.0),
+  ])
+  def test_kona_ev_2022_high_speed_friction_ramp(self, monkeypatch, kph, desired, increment):
+    threshold = get_kona_ev_2022_friction_threshold(kph / 3.6, desired)
+    monkeypatch.setattr(latcontrol_vehicle_tunes, "KONA_EV_2022_HIGH_SPEED_FRICTION_THRESHOLD_GAIN", 0.0)
+    baseline = get_kona_ev_2022_friction_threshold(kph / 3.6, desired)
+
+    assert threshold == pytest.approx(baseline + increment)
+    assert baseline <= threshold <= baseline + 0.30
+
+  def test_kona_ev_2022_high_speed_friction_preserves_large_error_authority(self):
+    controller, _, _, _, _ = self._build_torque_controller(HYUNDAI.HYUNDAI_KONA_EV_2022)
+    torque_params = controller.torque_params
+    threshold = get_kona_ev_2022_friction_threshold(120.0 / 3.6, 0.65)
+    base_threshold = get_standard_friction_threshold(120.0 / 3.6)
+
+    for direction in (-1.0, 1.0):
+      small = get_friction(direction * 0.10, 0.0, threshold, torque_params)
+      baseline_small = get_friction(direction * 0.10, 0.0, base_threshold, torque_params)
+      assert abs(small) == pytest.approx(abs(baseline_small) * 0.5, abs=0.0001)
+      assert small * direction > 0.0
+      assert get_friction(direction * 1.0, 0.0, threshold, torque_params) == pytest.approx(
+        get_friction(direction * 1.0, 0.0, base_threshold, torque_params),
+      )
+
+  def test_kona_ev_2022_high_speed_friction_update_path(self, monkeypatch):
+    controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.HYUNDAI_KONA_EV_2022)
+    CS.vEgo = 120.0 / 3.6
+    CS.steeringAngleDeg = 0.0
+    for _ in range(60):
+      output, _, state = controller.update(True, CS, VM, params, False, 0.0001, False, 0.28, None, None, toggles)
+    threshold = controller.starpilot_lateral_state.frictionThreshold
+
+    monkeypatch.setattr(latcontrol_vehicle_tunes, "KONA_EV_2022_HIGH_SPEED_FRICTION_THRESHOLD_GAIN", 0.0)
+    baseline, base_VM, base_CS, base_params, base_toggles = self._build_torque_controller(HYUNDAI.HYUNDAI_KONA_EV_2022)
+    base_CS.vEgo = CS.vEgo
+    base_CS.steeringAngleDeg = CS.steeringAngleDeg
+    for _ in range(60):
+      base_output, _, base_state = baseline.update(
+        True, base_CS, base_VM, base_params, False, 0.0001, False, 0.28, None, None, base_toggles,
+      )
+
+    assert state.active and base_state.active
+    assert threshold - baseline.starpilot_lateral_state.frictionThreshold == pytest.approx(0.30)
+    assert state.desiredLateralAccel == pytest.approx(base_state.desiredLateralAccel)
+    assert state.p == pytest.approx(base_state.p)
+    assert abs(state.f) < abs(base_state.f)
+    assert abs(output) < abs(base_output)
+    assert controller.steer_max == baseline.steer_max
+
+  @pytest.mark.parametrize("platform", [HYUNDAI.HYUNDAI_KONA_EV, HYUNDAI.HYUNDAI_KONA, HYUNDAI.HYUNDAI_IONIQ_6])
+  def test_kona_ev_2022_high_speed_cleanup_does_not_apply_to_other_platforms(self, monkeypatch, platform):
+    def unexpected_kona_threshold(*_args):
+      raise AssertionError("Kona EV 2022 threshold called for another platform")
+
+    monkeypatch.setattr(latcontrol_torque, "get_kona_ev_2022_friction_threshold", unexpected_kona_threshold)
+    controller, VM, CS, params, toggles = self._build_torque_controller(platform, force_torque=True)
+    CS.vEgo = 120.0 / 3.6
+    _, _, state = controller.update(True, CS, VM, params, False, 0.0001, False, 0.0, None, None, toggles)
+
+    assert state.active
+    assert not controller.is_kona_ev_2022
+
   def test_ioniq_5_center_taper_curve(self):
     assert get_ioniq_5_center_taper_scale(0.0, 25.0) < get_ioniq_5_center_taper_scale(0.0, 10.0)
     assert get_ioniq_5_center_taper_scale(0.0, 25.0) < get_ioniq_5_center_taper_scale(0.20, 25.0) <= 1.0
@@ -1371,6 +1656,30 @@ class TestLatControl:
     assert center < 0.20
     assert turn > center
     assert highway > center
+
+  @pytest.mark.parametrize("direction", [-1, 1])
+  def test_ioniq_5_creep_turn_relief_preserves_center_and_unwind(self, direction):
+    args = (direction * 0.03, direction * 0.05, 1.0)
+    legacy = get_ioniq_5_low_speed_output_limit(*args)
+    assert get_ioniq_5_low_speed_output_limit(*args, direction * 0.02, direction) == pytest.approx(0.30)
+    for curvature, torque in [(0.0, direction), (direction * 0.005, direction),
+                              (direction * 0.02, -direction), (direction * 0.02, 0.0)]:
+      assert get_ioniq_5_low_speed_output_limit(*args, curvature, torque) == legacy
+    for speed in (10.0, 15.0, 25.0, 35.0):
+      assert get_ioniq_5_low_speed_output_limit(*args[:2], speed, direction * 0.1, direction) == \
+             get_ioniq_5_low_speed_output_limit(*args[:2], speed)
+
+  def test_ioniq_5_creep_turn_relief_is_continuous_and_bounded(self):
+    args = (0.03, 0.05, 1.0)
+    legacy = get_ioniq_5_low_speed_output_limit(*args)
+    for step in range(101):
+      curvature = step * 0.0004
+      limit = get_ioniq_5_low_speed_output_limit(*args, curvature, 1.0)
+      assert legacy <= limit <= 0.30
+      assert limit == pytest.approx(get_ioniq_5_low_speed_output_limit(-args[0], -args[1], args[2], -curvature, -1.0))
+    for boundary in (0.005, 0.020):
+      assert abs(get_ioniq_5_low_speed_output_limit(*args, boundary + 1e-7, 1.0) -
+                 get_ioniq_5_low_speed_output_limit(*args, boundary - 1e-7, 1.0)) < 1e-5
 
   def test_ioniq_ev_old_ff_scale_curve(self):
     assert get_ioniq_ev_old_ff_scale(0.0, 0.0, 20.0) == 1.0
@@ -1707,6 +2016,114 @@ class TestLatControl:
     assert base_output != 0.0
     assert tapered_output == pytest.approx(base_output * 0.5)
 
+  def test_genesis_gv70_output_stabilizer_is_speed_and_phase_aware(self):
+    low_speed = get_genesis_gv70_stabilized_output(-0.2, 0.2, 0.1, -0.4, 5.0, DT_CTRL)
+    high_speed_center = get_genesis_gv70_stabilized_output(-0.2, 0.2, 0.1, -0.4, 30.0, DT_CTRL)
+    high_speed_wind = get_genesis_gv70_stabilized_output(0.1, 0.3, 0.8, 0.5, 30.0, DT_CTRL)
+    high_speed_unwind = get_genesis_gv70_stabilized_output(0.1, 0.3, 0.8, -0.5, 30.0, DT_CTRL)
+    high_speed_direction_change = get_genesis_gv70_stabilized_output(-0.3, 0.3, -0.8, -0.5, 30.0, DT_CTRL)
+
+    assert low_speed == pytest.approx(-0.2, abs=0.005)
+    assert abs(high_speed_center - 0.2) < abs(low_speed - 0.2)
+    assert high_speed_unwind > high_speed_wind > 0.1
+    assert abs(high_speed_direction_change - 0.3) > abs(high_speed_center - 0.2)
+
+  def test_genesis_gv70_stabilizer_filters_feedforward_not_feedback(self, monkeypatch):
+    calls = []
+
+    def stabilized_output(output_torque, prev_output_torque, desired_lateral_accel,
+                          desired_lateral_jerk, v_ego, dt):
+      calls.append((output_torque, prev_output_torque, desired_lateral_accel,
+                    desired_lateral_jerk, v_ego, dt))
+      return 0.123
+
+    monkeypatch.setattr(latcontrol_torque, "get_genesis_gv70_stabilized_output", stabilized_output)
+    controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.GENESIS_GV70_ELECTRIFIED_1ST_GEN)
+    CS.vEgo = 25.0
+    controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+    output, _, lac_log = controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+
+    assert calls
+    assert lac_log.active
+    assert lac_log.f == pytest.approx(0.123)
+    expected_accel = lac_log.p + lac_log.i + lac_log.d + lac_log.f
+    expected_torque = controller.torque_from_lateral_accel(expected_accel, controller.torque_params)
+    assert output == pytest.approx(-expected_torque)
+
+    previous_p = lac_log.p
+    CS.steeringAngleDeg += 0.5
+    _, _, next_log = controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+    assert next_log.f == pytest.approx(0.123)
+    assert next_log.p != pytest.approx(previous_p)
+
+    call_count = len(calls)
+    CS.steeringPressed = True
+    controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+    assert len(calls) == call_count
+    assert controller.pid.d == 0.0
+
+    CS.steeringPressed = False
+    controller.update(
+      True, CS, VM, params, False, 0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+    assert len(calls) == call_count
+    controller.update(False, CS, VM, params, False, 0.0, False, 0.2, None, None, starpilot_toggles)
+    assert controller.gv70_previous_feedforward is None
+    controller.update(
+      True, CS, VM, params, False, -0.0002, False, 0.2, None, None, starpilot_toggles,
+    )
+    assert len(calls) == call_count
+
+  @pytest.mark.parametrize("car_name", [HYUNDAI.GENESIS_G70_2020, HYUNDAI.GENESIS_GV70_1ST_GEN, HYUNDAI.KIA_EV6,
+                                        HYUNDAI.HYUNDAI_IONIQ_6])
+  def test_genesis_gv70_measurement_damping_does_not_change_other_cars(self, car_name):
+    controller, _, _, _, _ = self._build_torque_controller(car_name)
+    assert not controller.is_genesis_gv70
+    assert max(controller.pid._k_d[1]) == 0.0
+
+  def test_genesis_gv70_measurement_damping_is_bounded_and_has_no_steady_bias(self):
+    controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.GENESIS_GV70_ELECTRIFIED_1ST_GEN)
+    CS.vEgo = 30.0
+    CS.steeringAngleDeg = 0.0
+    controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    CS.steeringAngleDeg = -5.0
+    output, _, moving_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert -0.300001 <= moving_log.d < 0.0
+    assert abs(output) <= controller.steer_max
+    for _ in range(150):
+      _, _, steady_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert steady_log.d == pytest.approx(0.0, abs=1e-6)
+
+    CS.vEgo = 3.0
+    CS.steeringAngleDeg = 5.0
+    _, _, low_speed_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert low_speed_log.d == 0.0
+
+  @pytest.mark.parametrize("direction", [-1.0, 1.0])
+  def test_genesis_gv70_overshoot_correction_bypasses_old_turn_output(self, monkeypatch, direction):
+    controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.GENESIS_GV70_ELECTRIFIED_1ST_GEN)
+    CS.vEgo = 22.0
+    CS.steeringAngleDeg = math.degrees(VM.get_steer_from_curvature(-direction * 2.4 / CS.vEgo ** 2, CS.vEgo, 0.0))
+    controller.curvature_request_buffer = deque([direction * 0.8 / CS.vEgo ** 2] * controller.request_buffer_len,
+                                               maxlen=controller.request_buffer_len)
+    controller.prev_output_torque = direction * 0.8
+    controller.gv70_previous_feedforward = direction * 0.8
+    monkeypatch.setattr(latcontrol_torque, "get_genesis_gv70_stabilized_output", lambda *_args: direction * 0.2)
+    output, _, lac_log = controller.update(
+      True, CS, VM, params, False, direction * 0.8 / CS.vEgo ** 2, False, 0.2, None, None, toggles,
+    )
+    assert lac_log.p * direction < 0.0
+    assert output * direction > 0.0
+    assert abs(output) <= controller.steer_max
+
   def test_genesis_g70_low_speed_output_guard_update_path(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.GENESIS_G70_2020)
     CS.vEgo = 2.0
@@ -1741,6 +2158,38 @@ class TestLatControl:
 
     assert lac_log.active
     assert abs(output) <= 0.05
+
+  @pytest.mark.parametrize("direction", [-1, 1])
+  @pytest.mark.parametrize("driver_state", ["clear", "pressed", "released"])
+  def test_ioniq_5_creep_turn_relief_update_path(self, monkeypatch, direction, driver_state):
+    controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.HYUNDAI_IONIQ_5)
+    CS.vEgo = 1.0
+    CS.steeringPressed = driver_state == "pressed"
+    controller.prev_steering_pressed = driver_state == "released"
+    curvature = direction * 0.04
+    controller.curvature_request_buffer = deque([curvature] * controller.request_buffer_len,
+                                               maxlen=controller.request_buffer_len)
+    limit = latcontrol_torque.get_ioniq_5_low_speed_output_limit
+    baseline, _, old_log = controller.update(True, CS, VM, params, False, curvature, False, 0.2, None, None, toggles)
+    controller.pid.reset()
+    controller.prev_steering_pressed = driver_state == "released"
+    monkeypatch.setattr(latcontrol_torque, "get_ioniq_5_low_speed_output_limit", lambda accel, jerk, speed, *_args: limit(accel, jerk, speed))
+    original, _, new_log = controller.update(True, CS, VM, params, False, curvature, False, 0.2, None, None, toggles)
+    assert old_log.desiredLateralAccel == new_log.desiredLateralAccel
+    assert old_log.actualLateralAccel == new_log.actualLateralAccel
+    if driver_state != "clear":
+      assert baseline == original
+    else:
+      assert abs(original) < abs(baseline) <= 0.30
+      assert baseline * direction < 0.0
+
+  @pytest.mark.parametrize("car_name", [HYUNDAI.HYUNDAI_IONIQ_6, HYUNDAI.HYUNDAI_IONIQ_5_PE, HYUNDAI.KIA_EV6])
+  def test_ioniq_5_creep_turn_relief_does_not_change_other_cars(self, monkeypatch, car_name):
+    monkeypatch.setattr(latcontrol_torque, "get_ioniq_5_low_speed_output_limit", lambda *_args: pytest.fail("Ioniq 5 limit reached another car"))
+    controller, VM, CS, params, toggles = self._build_torque_controller(car_name, force_torque=True)
+    CS.vEgo = 1.0
+    controller.update(True, CS, VM, params, False, 0.04, False, 0.2, None, None, toggles)
+    assert not controller.is_ioniq_5
 
   def test_ioniq_6_default_update_path(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.HYUNDAI_IONIQ_6)
@@ -1808,6 +2257,76 @@ class TestLatControl:
     turn_threshold = get_kia_stinger_2022_friction_threshold(20.0, 0.60)
     assert center_threshold == pytest.approx(base_threshold * 1.10, rel=0.01)
     assert turn_threshold == pytest.approx(base_threshold, rel=0.01)
+
+  @pytest.mark.parametrize("direction", [-1, 1])
+  def test_kia_stinger_2022_highway_friction_preserves_turns_and_low_speed(self, direction):
+    threshold = get_kia_stinger_2022_friction_threshold
+    for speed in (0.0, 10.0, 20.0, 50.0 * 0.44704):
+      assert threshold(speed, direction * 0.10, direction * 0.10) == threshold(speed, direction * 0.10, direction * 0.10, 0.0, True)
+    for desired, future, jerk in [(0.40, 0.0, 0.0), (0.05, 0.40, 0.0), (0.0, 0.0, 0.75)]:
+      args = (30.0, direction * desired, direction * jerk, direction * future)
+      assert threshold(*args) == threshold(*args, True)
+    args = (30.0, direction * 0.05, direction * 0.10)
+    assert threshold(*args) == pytest.approx(threshold(*args, 0.0, True) + 0.20)
+
+  def test_kia_stinger_2022_highway_friction_is_symmetric_continuous_and_bounded(self):
+    threshold = get_kia_stinger_2022_friction_threshold
+    for step in range(101):
+      speed, desired, jerk = step * 0.4, step * 0.006, step * 0.01
+      value = threshold(speed, desired, jerk, desired)
+      base = threshold(speed, desired, jerk, desired, True)
+      assert base <= value <= base + 0.20
+      assert value == threshold(speed, -desired, -jerk, -desired)
+    for speed in (50.0 * 0.44704, 60.0 * 0.44704):
+      assert abs(threshold(speed + 1e-7) - threshold(speed - 1e-7)) < 1e-5
+    for desired in (0.15, 0.40):
+      assert abs(threshold(30.0, desired + 1e-7) - threshold(30.0, desired - 1e-7)) < 1e-5
+    for jerk in (0.20, 0.75):
+      assert abs(threshold(30.0, 0.0, jerk + 1e-7) - threshold(30.0, 0.0, jerk - 1e-7)) < 1e-5
+
+  def test_kia_stinger_2022_highway_friction_retains_full_compensation(self):
+    tune = car.CarParams.LateralTorqueTuning.new_message(friction=0.105, latAccelFactor=2.82)
+    quiet = get_kia_stinger_2022_friction_threshold(30.0)
+    base = get_kia_stinger_2022_friction_threshold(30.0, 0.0, 0.0, 0.0, True)
+    for error in (-1.0, -0.10, 0.10, 1.0):
+      new = get_friction(error, 0.0, quiet, tune)
+      old = get_friction(error, 0.0, base, tune)
+      if abs(error) >= 1.0:
+        assert new == old
+      else:
+        assert abs(new) < abs(old)
+
+  @pytest.mark.parametrize("driver_state", ["clear", "pressed", "released"])
+  def test_kia_stinger_2022_highway_friction_update_path(self, monkeypatch, driver_state):
+    threshold = latcontrol_torque.get_kia_stinger_2022_friction_threshold
+    def output():
+      controller, VM, CS, params, toggles = self._build_torque_controller(HYUNDAI.KIA_STINGER_2022)
+      CS.vEgo = 60.0 * 0.44704
+      CS.steeringAngleDeg = 0.5
+      CS.steeringPressed = driver_state == "pressed"
+      controller.prev_steering_pressed = driver_state == "released"
+      return controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    quiet, _, quiet_log = output()
+    monkeypatch.setattr(latcontrol_torque, "get_kia_stinger_2022_friction_threshold",
+                        lambda speed, desired, jerk, future, _pressed: threshold(speed, desired, jerk, future, True))
+    baseline, _, original_log = output()
+    assert quiet_log.desiredLateralAccel == original_log.desiredLateralAccel
+    assert quiet_log.actualLateralAccel == original_log.actualLateralAccel
+    assert quiet_log.p == original_log.p
+    assert quiet_log.i == original_log.i
+    if driver_state == "clear":
+      assert abs(quiet) < abs(baseline)
+    else:
+      assert quiet == baseline
+
+  @pytest.mark.parametrize("car_name", [HYUNDAI.KIA_STINGER, HYUNDAI.GENESIS_G70_2020, HYUNDAI.HYUNDAI_IONIQ_5])
+  def test_kia_stinger_2022_highway_friction_does_not_change_other_cars(self, monkeypatch, car_name):
+    monkeypatch.setattr(latcontrol_torque, "get_kia_stinger_2022_friction_threshold",
+                        lambda *_args: pytest.fail("Stinger 2022 threshold reached another car"))
+    controller, VM, CS, params, toggles = self._build_torque_controller(car_name, force_torque=True)
+    CS.vEgo = 60.0 * 0.44704
+    controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert not controller.is_kia_stinger_2022
 
   def test_kia_stinger_2022_default_update_path(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.KIA_STINGER_2022)
@@ -1966,6 +2485,41 @@ class TestLatControl:
     assert lac_log.active
     assert abs(tuned_output) < abs(base_output)
 
+  def test_honda_crv_5g_pid_center_gain_update_path(self):
+    controller, VM, CS, params, toggles = self._build_pid_controller(HONDA.HONDA_CRV_5G)
+    CS.vEgo = 8.0 * 0.44704
+    CS.steeringAngleDeg = -2.0
+    controller.pid.i = 0.03
+    toggles.honda_lateral_pid_kp_scale = 1.2
+    toggles.honda_lateral_pid_ki_scale = 0.8
+    for _ in range(20):
+      _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+      assert lac_log.p == pytest.approx(controller.base_kp_v[0] * 1.2 * 0.5 * lac_log.angleError)
+      assert lac_log.i == pytest.approx(0.03)
+      assert controller.pid._k_i[1] == pytest.approx([value * 0.8 for value in controller.base_ki_v])
+
+    CS.vEgo = 25.0 * 0.44704
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert lac_log.p == pytest.approx(controller.base_kp_v[0] * 1.2 * lac_log.angleError)
+
+  @pytest.mark.parametrize('car_name,eps_modified', [(HONDA.HONDA_CRV_5G, True), (HONDA.HONDA_CIVIC_BOSCH, False),
+                                                  (TOYOTA.TOYOTA_RAV4_TSS2, False)])
+  def test_honda_crv_5g_pid_center_gain_does_not_change_other_paths(self, monkeypatch, car_name, eps_modified):
+    controller, VM, CS, params, toggles = self._build_pid_controller(car_name)
+    if eps_modified:
+      CP = interfaces[car_name].get_non_essential_params(car_name)
+      CP.flags = int(CP.flags | HondaFlags.EPS_MODIFIED)
+      controller = LatControlPID(CP.as_reader(), interfaces[car_name](CP, custom.StarPilotCarParams.new_message()), DT_CTRL)
+    CS.vEgo = 8.0 * 0.44704
+    CS.steeringAngleDeg = -2.0
+
+    def unexpected_gain(*_args):
+      raise AssertionError('CR-V center gain must not run for this controller')
+
+    monkeypatch.setattr(latcontrol_pid, 'get_honda_crv_5g_pid_kp_scale', unexpected_gain)
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+    assert lac_log.p == pytest.approx(controller.base_kp_v[0] * lac_log.angleError)
+
   def test_rav4_tss2_torque_center_tune_fades_before_real_turns(self):
     low_speed_center = get_rav4_tss2_center_output_scale(0.05, 8.0)
     low_speed_turn = get_rav4_tss2_center_output_scale(1.0, 8.0)
@@ -1988,6 +2542,68 @@ class TestLatControl:
 
     assert lac_log.active
     assert abs(tuned_output) < abs(base_output)
+
+  @pytest.mark.parametrize('speed,increment', [(0.0, 0.0), (2.5, 0.0), (5.0, 0.04), (10.0, 0.065),
+                                             (15.0, 0.05), (25.0, 0.025), (30.0, 0.025)])
+  def test_rav4_tss2_friction_cleanup_speed_curve(self, speed, increment):
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(0.0, speed)
+    )
+
+    assert get_rav4_tss2_friction_threshold(speed) == pytest.approx(baseline + increment)
+
+  @pytest.mark.parametrize('accel,jerk', [(0.0, 0.0), (0.5, 0.4), (0.85, 0.0), (0.0, 0.75), (1.5, 1.0)])
+  def test_rav4_tss2_friction_cleanup_is_symmetric(self, accel, jerk):
+    threshold = get_rav4_tss2_friction_threshold(10.0, accel, jerk)
+
+    assert get_rav4_tss2_friction_threshold(10.0, -accel, jerk) == pytest.approx(threshold)
+    assert get_rav4_tss2_friction_threshold(10.0, accel, -jerk) == pytest.approx(threshold)
+    assert get_rav4_tss2_friction_threshold(10.0, -accel, -jerk) == pytest.approx(threshold)
+
+  @pytest.mark.parametrize('speed,accel,jerk', [(2.5, 0.1, 0.0), (10.0, 0.85, 0.0), (10.0, 0.1, 0.75),
+                                             (25.0, -1.2, -0.2), (25.0, -0.1, -1.0)])
+  def test_rav4_tss2_friction_cleanup_preserves_turn_authority(self, speed, accel, jerk):
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(accel, speed)
+    )
+
+    assert get_rav4_tss2_friction_threshold(speed, accel, jerk) == pytest.approx(baseline)
+
+  def test_rav4_tss2_friction_cleanup_softens_ramp_not_full_friction(self):
+    controller, _, _, _, _ = self._build_torque_controller(TOYOTA.TOYOTA_RAV4_TSS2)
+    speed = 10.0
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(0.0, speed)
+    )
+    threshold = get_rav4_tss2_friction_threshold(speed)
+
+    assert get_friction(0.1, 0.0, threshold, controller.torque_params) < get_friction(0.1, 0.0, baseline, controller.torque_params)
+    for error in (-1.0, 1.0):
+      assert get_friction(error, 0.0, threshold, controller.torque_params) == pytest.approx(
+        get_friction(error, 0.0, baseline, controller.torque_params)
+      )
+
+  @pytest.mark.parametrize('car_name', [TOYOTA.TOYOTA_RAV4_TSS2, TOYOTA.TOYOTA_RAV4_TSS2_2022,
+                                       TOYOTA.TOYOTA_RAV4_PRIME, TOYOTA.TOYOTA_CAMRY])
+  def test_rav4_tss2_friction_cleanup_update_scope(self, monkeypatch, car_name):
+    controller, VM, CS, params, toggles = self._build_torque_controller(car_name)
+    CS.vEgo = 10.0
+    calls = []
+
+    def friction_threshold(*args):
+      calls.append(args)
+      return 0.4
+
+    monkeypatch.setattr(latcontrol_torque, 'get_rav4_tss2_friction_threshold', friction_threshold)
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+
+    assert lac_log.active
+    assert len(calls) == (1 if car_name == TOYOTA.TOYOTA_RAV4_TSS2 else 0)
+    if calls:
+      assert controller.starpilot_lateral_state.frictionThreshold == pytest.approx(0.4)
 
   def test_rav4_tss2_pid_output_update_path(self, monkeypatch):
     controller, VM, CS, params, starpilot_toggles = self._build_pid_controller(TOYOTA.TOYOTA_RAV4_TSS2)

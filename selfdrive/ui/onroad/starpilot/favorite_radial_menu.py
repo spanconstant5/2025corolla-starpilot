@@ -9,6 +9,7 @@ from typing import Any
 
 import pyray as rl
 
+from openpilot.starpilot.common.controller_actions import CONTROLLER_ACTION_SET_SPEED
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_SLOT_COUNT,
   get_favorite_enum_state,
@@ -69,11 +70,13 @@ class FavoriteRadialMenu:
 
   def __init__(self, params: Any, params_memory: Any,
                option_provider: Callable[[], Iterable[dict[str, Any]]], *,
-               clock: Callable[[], float] = time.monotonic):
+               clock: Callable[[], float] = time.monotonic,
+               cache_render_texture: Callable[..., Any] | None = None):
     self._params = params
     self._params_memory = params_memory
     self._option_provider = option_provider
     self._clock = clock
+    self._cache_render_texture = cache_render_texture
 
     self._state = self.STATE_COLLAPSED
     self._selected_slot: int | None = None
@@ -193,13 +196,15 @@ class FavoriteRadialMenu:
   def render(self, rect: rl.Rectangle) -> None:
     self._layout(rect)
     self._collapse_if_idle()
-    if self._state == self.STATE_COLLAPSED:
-      self._draw_corner_hint()
-    elif self._state == self.STATE_RADIAL:
-      self._draw_corner_hint()
+    if self._state == self.STATE_RADIAL:
       self._draw_radial_menu()
-    else:
+    elif self._state == self.STATE_PICKER:
       self._draw_picker()
+
+  def render_corner_hint(self, rect: rl.Rectangle) -> None:
+    self._rect = rect
+    if not self.is_picker_open:
+      self._draw_corner_hint()
 
   def blocks_pointer(self, mouse_pos: Any) -> bool:
     """Whether a parent click at ``mouse_pos`` belongs to this menu."""
@@ -257,6 +262,9 @@ class FavoriteRadialMenu:
       key = slot.get("key")
       if key in self._available_option_labels:
         slot["label"] = self._available_option_labels[key]
+      if key == CONTROLLER_ACTION_SET_SPEED and slot.get("value") is not None:
+        unit = "km/h" if self._params.get_bool("IsMetric") else "mph"
+        slot["label"] = f"Set Speed To {slot['value']:g} {unit}"
     self._layout_slot_rects()
     self._layout_picker_rects()
 
@@ -590,7 +598,7 @@ class FavoriteRadialMenu:
 
   def _open_picker(self, slot_index: int) -> None:
     options = self._refresh_option_catalog()
-    self._picker_options = options or []
+    self._picker_options = [option for option in (options or []) if option.get("value_type") != "speed"]
     self._selected_slot = slot_index
     self._editing_slot = None
     self._picker_page = 0
@@ -602,7 +610,7 @@ class FavoriteRadialMenu:
       return
 
     key = str(option.get("key") or "").strip()
-    if not key:
+    if not key or key == CONTROLLER_ACTION_SET_SPEED or option.get("value_type") == "speed":
       return
 
     slots = load_favorite_slots(self._params, eligible_keys=self._available_option_keys)
@@ -717,11 +725,48 @@ class FavoriteRadialMenu:
     x0 = self._rect.x
     y0 = self._rect.y + self._rect.height
     is_pressed = self._corner_press is not None
-
     size = 150.0 * scale
+    texture_size = max(1, int(round(size)))
+    texture_scale = texture_size / 150.0
+    # Cache the hint's two appearances instead of rebuilding the mesh every frame.
+    cache = self._cache_render_texture
+    texture = None
+    if cache is not None:
+      variant = "pressed" if is_pressed else "idle"
+      texture = cache(
+        f"favorite-corner-hint:{texture_size}:{variant}",
+        texture_size,
+        texture_size,
+        lambda: FavoriteRadialMenu._draw_corner_hint_geometry(
+          texture_scale, is_pressed, 0.0, float(texture_size),
+        ),
+      )
+
+    if texture is not None:
+      rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+      try:
+        rl.draw_texture_pro(
+          texture,
+          rl.Rectangle(0, 0, texture_size, -texture_size),
+          rl.Rectangle(x0, y0 - size, size, size),
+          rl.Vector2(0, 0),
+          0.0,
+          rl.WHITE,
+        )
+      finally:
+        rl.end_blend_mode()
+      return
+
+    self._draw_corner_hint_geometry(scale, is_pressed, x0, y0)
+
+  @classmethod
+  def _draw_corner_hint_geometry(cls, scale: float, is_pressed: bool,
+                                 x0: float, y0: float) -> None:
+    size = 150.0 * scale
+
     steps = 48
 
-    # 1. Precompute edge vertices to minimize per-frame allocations
+    # Build the gradient mesh once for this cached appearance.
     v_origin = rl.Vector2(x0, y0)
     inv_steps = 1.0 / steps
     pts_top = [rl.Vector2(x0, y0 - size * (k * inv_steps)) for k in range(steps + 1)]
@@ -741,7 +786,7 @@ class FavoriteRadialMenu:
       purple_a = int(purple_max_alpha * ((1.0 - t_mid) ** 1.75))
 
       for col in (rl.Color(8, 6, 18, base_a) if base_a > 0 else None,
-                  self._sample_aether_color(t_mid, purple_a) if purple_a > 0 else None):
+                  cls._sample_aether_color(t_mid, purple_a) if purple_a > 0 else None):
         if col is None:
           continue
         if i == 0:
@@ -751,8 +796,8 @@ class FavoriteRadialMenu:
           rl.draw_triangle(v_tb, v_ra, v_rb, col)
 
     # 3. Ultra-Polished Frosted-Glass Vector Arrow (Nestled deep in purple corner)
-    cx = x0 + 34.0 * scale
-    cy = y0 - 34.0 * scale
+    inset = (cls.CORNER_HINT_RING_RADIUS + cls.CORNER_HINT_EDGE_MARGIN) * scale
+    cx, cy = x0 + inset, y0 - inset
 
     tip = rl.Vector2(cx + 15.0 * scale, cy - 15.0 * scale)
     tail = rl.Vector2(cx - 15.0 * scale, cy + 15.0 * scale)
@@ -1013,7 +1058,7 @@ class FavoriteRadialMenu:
     title = f"Assign Favorite {self._selected_slot + 1}" if self._selected_slot is not None else "Assign Favorite"
     title_pos = rl.Vector2(self._drawer_rect.x + 36 * scale, self._drawer_rect.y + 26 * scale)
     self._draw_text(self._font(bold=True), title, title_pos, int(50 * scale), self._TEXT)
-    subtitle = "Choose a shortcut"
+    subtitle = "Set Speed: configure in New Galaxy"
     self._draw_text(
       self._font(bold=False), subtitle,
       rl.Vector2(title_pos.x, title_pos.y + 72 * scale), int(26 * scale), self._MUTED_TEXT,

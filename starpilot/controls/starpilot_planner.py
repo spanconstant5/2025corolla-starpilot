@@ -166,11 +166,9 @@ class StarPilotPlanner:
 
     CS = sm["carState"]
     blinker_on = CS.leftBlinker or CS.rightBlinker
-    signal_pause = blinker_on and starpilot_toggles.pause_lateral_below_signal
 
     self.lateral_check = v_ego >= starpilot_toggles.pause_lateral_below_speed
     self.lateral_check |= not blinker_on and starpilot_toggles.pause_lateral_below_signal
-    self.lateral_check |= CS.standstill and not signal_pause
     self.lateral_check &= not sm["starpilotCarState"].pauseLateral
 
     # Blinker-based lateral resume delay: after blinker turns off, delay lateral
@@ -227,13 +225,13 @@ class StarPilotPlanner:
     if conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_experimental_mode", False)):
       # Keep CEM's filters warm in AOL so engagement can inherit the current scene.
       self.starpilot_cem.update(v_ego, sm, starpilot_toggles, v_cruise)
-      self.starpilot_ccm.experimental_mode = True
+      self.starpilot_ccm.deactivate()
     elif conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_chill_mode", False)):
       self.starpilot_ccm.update(v_ego, v_cruise, sm, starpilot_toggles)
-      self.starpilot_cem.experimental_mode = False
+      self.starpilot_cem.deactivate()
     else:
-      self.starpilot_ccm.experimental_mode = True
-      self.starpilot_cem.experimental_mode = False
+      self.starpilot_ccm.deactivate()
+      self.starpilot_cem.deactivate()
       self.starpilot_cem.curve_detected = False
       self.starpilot_cem.stop_sign_and_light(v_ego, sm, PLANNER_TIME - 2)
 
@@ -341,7 +339,7 @@ class StarPilotPlanner:
     starpilotPlan.pulseGlideCoasting = self.starpilot_acceleration.pulse_glide_coasting
     starpilotPlan.trackingLead = self.tracking_lead
 
-    conditional_experimental_mode = False
+    conditional_experimental_mode = bool(getattr(starpilot_toggles, "experimental_mode", False))
     if starpilot_toggles.conditional_experimental_mode:
       conditional_experimental_mode = self.starpilot_cem.experimental_mode
     elif starpilot_toggles.conditional_chill_mode:
@@ -384,7 +382,9 @@ class StarPilotPlanner:
     starpilotPlan.slcSpeedLimit = self.starpilot_vcruise.slc_target
     starpilotPlan.slcSpeedLimitOffset = self.starpilot_vcruise.slc_offset
     starpilotPlan.slcSpeedLimitSource = self.starpilot_vcruise.slc.source
-    starpilotPlan.speedLimitChanged = self.starpilot_vcruise.slc.speed_limit_changed_timer > DT_MDL
+    starpilotPlan.slcPresentedSpeedLimitSource = self.starpilot_vcruise.slc.presented_source
+    starpilotPlan.slcIsLimitingMaxSet = self.starpilot_vcruise.slc_is_limiting_max_set
+    starpilotPlan.speedLimitChanged = self.starpilot_vcruise.slc.confirmation_pending
     starpilotPlan.unconfirmedSlcSpeedLimit = self.starpilot_vcruise.slc.unconfirmed_speed_limit
 
     starpilotPlan.themeUpdated = theme_updated

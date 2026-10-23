@@ -1,12 +1,22 @@
 from dataclasses import dataclass, field
+from enum import IntFlag
 
 from opendbc.car.structs import CarParams
 from opendbc.car import Bus, CarSpecs, DbcDict, PlatformConfig, Platforms
 from opendbc.car.lateral import AngleSteeringLimits
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.docs_definitions import CarDocs, CarHarness, CarParts
 from opendbc.car.fw_query_definitions import FwQueryConfig
 
 Ecu = CarParams.Ecu
+
+# C1 support is adapted from the original dragonpilot V40 port:
+# https://github.com/dragonpilot/dragonpilot/commit/773dce507082d931236b64dca8024dce9625446f
+
+
+class VolvoSafetyFlags(IntFlag):
+  SPA = 1
+  C1 = 2
 
 
 class CarControllerParams:
@@ -61,14 +71,12 @@ class CarControllerParams:
   # (potholes, lane corrections) get full yield while light sustained pressure
   # only gets a soft yield. yield_signed = YIELD_BASE − YIELD_SLOPE *
   # max(0, drv_mag_filt − OVERRIDE_ENTER), clamped to [YIELD_MIN, YIELD_BASE].
-  # At |drv|=7 (just over threshold): yield = +60 (light resistance).
-  # At |drv|=14: yield ≈ -4 (crosses past zero — EPS hands wheel to driver).
   # drv_mag_filt is a low-pass of |drv| (alpha=0.04, ~250 ms time constant) —
   # without it, 1-2 unit driver-torque jitter became ~10 unit yield-arm jitter
   # which PSCM converted to felt ripple at sustained co-steering pressure.
   LCA_AUTH_YIELD_BASE = 60        # yield-arm magnitude at the override threshold
   LCA_AUTH_YIELD_SLOPE = 8        # counts of yield reduction per unit |drv torque| above threshold
-  LCA_AUTH_YIELD_MIN = -30        # cap how far past zero the yield arm can go (full hand-over)
+  LCA_AUTH_YIELD_MIN = 0          # yield authority without crossing the safety sign boundary
   LCA_AUTH_YIELD_LP_ALPHA = 0.04  # LP-filter coefficient on |drv| for yield calc (~250 ms tau)
   LCA_AUTH_SPLIT = 200            # symmetric → asymmetric handover
   LCA_AUTH_REBUILD_RATE = 230     # counts/s (≈ 2.7 s rebuild from 0 to 614)
@@ -79,6 +87,19 @@ class CarControllerParams:
     540, # deg - 1.5 turns to lock
     ([0., 5., 25.], [2.5, 1.5, .2]),  # rate up limits at different speeds
     ([0., 5., 25.], [5., 2., .3]),    # rate down limits at different speeds
+  )
+
+  C1_STEER_NO = 0
+  C1_STEER = 3
+  C1_N_ZERO_TORQUE = 12
+  C1_ANGLE_ERROR = 20.0
+  C1_ANGLE_DELTA_BP = [0., 8.33, 13.89, 19.44, 25., 30.55, 36.1]
+  C1_ANGLE_DELTA_UP = [2., 1.2, .25, .20, .15, .10, .10]
+  C1_ANGLE_DELTA_DOWN = [2., 1.2, .25, .20, .15, .10, .10]
+  C1_ANGLE_LIMITS: AngleSteeringLimits = AngleSteeringLimits(
+    359.9,
+    (C1_ANGLE_DELTA_BP, C1_ANGLE_DELTA_UP),
+    (C1_ANGLE_DELTA_BP, C1_ANGLE_DELTA_DOWN),
   )
 
 
@@ -105,7 +126,26 @@ class VolvoSPAPlatformConfig(PlatformConfig):
   })
 
 
+@dataclass
+class VolvoC1PlatformConfig(PlatformConfig):
+  dbc_dict: DbcDict = field(default_factory=lambda: {
+    Bus.pt: 'volvo_v40_2017_pt',
+    Bus.cam: 'volvo_v40_2017_pt',
+  })
+
+
 class CAR(Platforms):
+  VOLVO_V40 = VolvoC1PlatformConfig(
+    [VolvoCarDocs("Volvo V40 2013-19")],
+    CarSpecs(
+      mass=1610,
+      wheelbase=2.647,
+      steerRatio=14.7,
+      centerToFrontRatio=0.44,
+      minSteerSpeed=1.0 * CV.KPH_TO_MS,
+    ),
+  )
+
   VOLVO_XC40_RECHARGE = VolvoCMAPlatformConfig(
     [VolvoCarDocs("Volvo XC40 Recharge 2021-23")],
     CarSpecs(

@@ -434,9 +434,11 @@ def test_hyundai_lkas12_tx_requires_stock_camera_message():
 
   lkas12 = libsafety_py.make_CANPacket(0x53E, 0, bytes(6))
   assert not safety.safety_tx_hook(lkas12)
+  assert safety.safety_fwd_hook(2, 0x53E) == 0
 
   safety.safety_rx_hook(libsafety_py.make_CANPacket(0x53E, 2, bytes(6)))
   assert safety.safety_tx_hook(lkas12)
+  assert safety.safety_fwd_hook(2, 0x53E) == -1
 
 
 class TestHyundaiLongitudinalSafety(HyundaiLongitudinalBase, TestHyundaiSafety):
@@ -632,6 +634,23 @@ class TestHyundaiLongitudinalAolLkasOnEngageSafety(HyundaiAolLkasOnEngageBase, T
     self.safety.set_safety_hooks(CarParams.SafetyModel.hyundai,
                                  HyundaiSafetyFlags.LONG | HyundaiStarPilotSafetyFlags.AOL_LKAS_ON_ENGAGE)
     self.safety.init_tests()
+
+  def test_main_off_after_brake_keeps_lateral_permission(self):
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+    self._rx(self._button_msg(Buttons.SET))
+    self._rx(self._button_msg(Buttons.NONE))
+    self._rx(self._user_brake_msg(True))
+    self._rx(self._button_msg(Buttons.NONE, main_button=1))
+    self._rx(self._button_msg(Buttons.NONE, main_button=0))
+
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_lkas_on())
+    self._set_prev_torque(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
 
 
 class TestHyundaiLongitudinalAolMainLkasOnEngageSafety(TestHyundaiLongitudinalSafety):

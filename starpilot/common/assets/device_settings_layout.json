@@ -151,6 +151,29 @@
         "settings_tier": "simple"
       },
       {
+        "key": "TeslaAOLDisengageOnBrake",
+        "label": "Disengage AOL on Brake",
+        "description": "Pressing the brake fully turns off Always On Lateral. Steering stays off after the brake is released until openpilot is engaged again or AOL is manually toggled back on.",
+        "picker_description": "Keep steering off after pressing the brake until you deliberately re-engage it.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AlwaysOnLateral",
+        "vehicle_makes": ["Tesla"],
+        "settings_tier": "simple"
+      },
+      {
+        "key": "TeslaAOLScreenTap",
+        "label": "Three-Finger AOL Tap",
+        "description": "Toggle Always On Lateral by touching the Tesla screen with three fingers. Requires the Model 3/Y Vehicle CAN add-on cable, which is detected automatically. Does not engage or cancel cruise control. Restart the device after changing this setting or the AOL brake behavior when screen taps are enabled.",
+        "picker_description": "Toggle steering with a three-finger screen touch using the Vehicle CAN add-on cable.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "AlwaysOnLateral",
+        "vehicle_makes": ["Tesla"],
+        "requires_offroad": true,
+        "settings_tier": "simple"
+      },
+      {
         "key": "LaneChanges",
         "label": "Lane Changes",
         "description": "Allow openpilot to change lanes.",
@@ -1204,7 +1227,7 @@
       {
         "key": "CustomPersonalities",
         "label": "Driving Personalities",
-        "description": "Customize the \"Driving Personalities\" to better match your driving style.",
+        "description": "Customize braking, acceleration, and following distance for each profile.",
         "picker_description": "Customizes driving personalities to match your style.",
         "data_type": "bool",
         "ui_type": "toggle",
@@ -1258,7 +1281,7 @@
       {
         "key": "TrafficFollow",
         "label": "Following Distance",
-        "description": "The minimum following distance to the lead vehicle in \"Traffic Mode\". openpilot blends between this value and the \"Relaxed\" profile as speed increases. Increase for more space; decrease for tighter gaps.",
+        "description": "The minimum following distance to the lead vehicle. openpilot blends between this value and the \"Relaxed\" profile as speed increases. Increase for more space; decrease for tighter gaps.",
         "data_type": "float",
         "ui_type": "numeric",
         "min": 0.5,
@@ -1270,60 +1293,60 @@
       {
         "key": "TrafficJerkAcceleration",
         "label": "Acceleration Smoothness",
-        "description": "How smoothly openpilot accelerates in \"Traffic Mode\". Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
+        "description": "How smoothly openpilot accelerates. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "TrafficPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "TrafficJerkDeceleration",
         "label": "Braking Smoothness",
-        "description": "How smoothly openpilot brakes in \"Traffic Mode\". Increase for gentler stops; decrease for quicker but sharper braking.",
+        "description": "How smoothly openpilot brakes. Increase for gentler stops; decrease for quicker but sharper braking.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "TrafficPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "TrafficJerkDanger",
         "label": "Safety Gap Bias",
-        "description": "How much extra space openpilot keeps from the vehicle ahead in \"Traffic Mode\". Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
+        "description": "How much extra space openpilot keeps from the vehicle ahead. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "TrafficPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "TrafficJerkSpeedDecrease",
         "label": "Slowdown Response",
-        "description": "How smoothly openpilot slows down in \"Traffic Mode\". Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
+        "description": "How smoothly openpilot slows down. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "TrafficPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "TrafficJerkSpeed",
         "label": "Speed-Up Response",
-        "description": "How smoothly openpilot speeds up in \"Traffic Mode\". Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
+        "description": "How smoothly openpilot speeds up. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "TrafficPersonalityProfile",
         "settings_tier": "advanced"
       },
@@ -1354,60 +1377,60 @@
       {
         "key": "AggressiveJerkAcceleration",
         "label": "Acceleration Smoothness",
-        "description": "How smoothly openpilot accelerates with the \"Aggressive\" profile. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
+        "description": "How smoothly openpilot accelerates. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "AggressivePersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "AggressiveJerkDeceleration",
         "label": "Braking Smoothness",
-        "description": "How smoothly openpilot brakes with the \"Aggressive\" profile. Increase for gentler stops; decrease for quicker but sharper braking.",
+        "description": "How smoothly openpilot brakes. Increase for gentler stops; decrease for quicker but sharper braking.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "AggressivePersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "AggressiveJerkDanger",
         "label": "Safety Gap Bias",
-        "description": "How much extra space openpilot keeps from the vehicle ahead with the \"Aggressive\" profile. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
+        "description": "How much extra space openpilot keeps from the vehicle ahead. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "AggressivePersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "AggressiveJerkSpeedDecrease",
         "label": "Slowdown Response",
-        "description": "How smoothly openpilot slows down with the \"Aggressive\" profile. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
+        "description": "How smoothly openpilot slows down. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "AggressivePersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "AggressiveJerkSpeed",
         "label": "Speed-Up Response",
-        "description": "How smoothly openpilot speeds up with the \"Aggressive\" profile. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
+        "description": "How smoothly openpilot speeds up. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "AggressivePersonalityProfile",
         "settings_tier": "advanced"
       },
@@ -1438,60 +1461,60 @@
       {
         "key": "StandardJerkAcceleration",
         "label": "Acceleration Smoothness",
-        "description": "How smoothly openpilot accelerates with the \"Standard\" profile. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
+        "description": "How smoothly openpilot accelerates. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "StandardPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "StandardJerkDeceleration",
         "label": "Braking Smoothness",
-        "description": "How smoothly openpilot brakes with the \"Standard\" profile. Increase for gentler stops; decrease for quicker but sharper braking.",
+        "description": "How smoothly openpilot brakes. Increase for gentler stops; decrease for quicker but sharper braking.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "StandardPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "StandardJerkDanger",
         "label": "Safety Gap Bias",
-        "description": "How much extra space openpilot keeps from the vehicle ahead with the \"Standard\" profile. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
+        "description": "How much extra space openpilot keeps from the vehicle ahead. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "StandardPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "StandardJerkSpeedDecrease",
         "label": "Slowdown Response",
-        "description": "How smoothly openpilot slows down with the \"Standard\" profile. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
+        "description": "How smoothly openpilot slows down. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "StandardPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "StandardJerkSpeed",
         "label": "Speed-Up Response",
-        "description": "How smoothly openpilot speeds up with the \"Standard\" profile. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
+        "description": "How smoothly openpilot speeds up. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "StandardPersonalityProfile",
         "settings_tier": "advanced"
       },
@@ -1522,60 +1545,60 @@
       {
         "key": "RelaxedJerkAcceleration",
         "label": "Acceleration Smoothness",
-        "description": "How smoothly openpilot accelerates with the \"Relaxed\" profile. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
+        "description": "How smoothly openpilot accelerates. Increase for gentler starts; decrease for faster but more abrupt takeoffs.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "RelaxedPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "RelaxedJerkDeceleration",
         "label": "Braking Smoothness",
-        "description": "How smoothly openpilot brakes with the \"Relaxed\" profile. Increase for gentler stops; decrease for quicker but sharper braking.",
+        "description": "How smoothly openpilot brakes. Increase for gentler stops; decrease for quicker but sharper braking.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "RelaxedPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "RelaxedJerkDanger",
         "label": "Safety Gap Bias",
-        "description": "How much extra space openpilot keeps from the vehicle ahead with the \"Relaxed\" profile. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
+        "description": "How much extra space openpilot keeps from the vehicle ahead. Increase for larger gaps and more cautious following; decrease for tighter gaps and closer following.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "RelaxedPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "RelaxedJerkSpeedDecrease",
         "label": "Slowdown Response",
-        "description": "How smoothly openpilot slows down with the \"Relaxed\" profile. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
+        "description": "How smoothly openpilot slows down. Increase for more gradual deceleration; decrease for faster but sharper slowdowns.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "RelaxedPersonalityProfile",
         "settings_tier": "advanced"
       },
       {
         "key": "RelaxedJerkSpeed",
         "label": "Speed-Up Response",
-        "description": "How smoothly openpilot speeds up with the \"Relaxed\" profile. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
+        "description": "How smoothly openpilot speeds up. Increase for more gradual acceleration; decrease for quicker but more jolting acceleration.",
         "data_type": "float",
         "ui_type": "numeric",
-        "min": 0.5,
-        "max": 3.0,
-        "step": 0.01,
+        "min": 25,
+        "max": 200,
+        "step": 1,
         "parent_key": "RelaxedPersonalityProfile",
         "settings_tier": "advanced"
       },
@@ -2074,8 +2097,8 @@
       {
         "key": "SpeedLimitController",
         "label": "Speed Limit Controller",
-        "description": "Limit openpilot's maximum driving speed to the current speed limit from configured map, dashboard, and optional vision sources.",
-        "picker_description": "Limits speed using map, dashboard, or vision data.",
+        "description": "Limit openpilot's maximum driving speed using configured map, dashboard, and optional vision sources. Press + above a limit for a persistent override; hold the gas pedal for a temporary override.",
+        "picker_description": "Press + above a limit for a persistent override; hold the gas pedal for a temporary override.",
         "data_type": "bool",
         "ui_type": "toggle",
         "is_parent_toggle": true,
@@ -2163,30 +2186,6 @@
           {
             "value": 2,
             "label": "Previous Limit"
-          }
-        ],
-        "parent_key": "SpeedLimitController",
-        "settings_tier": "advanced"
-      },
-      {
-        "key": "SLCOverride",
-        "label": "Override Speed",
-        "description": "Choose how SLC behaves after you manually drive faster than the posted speed limit.",
-        "picker_description": "Chooses how SLC responds after you exceed the limit.",
-        "data_type": "int",
-        "ui_type": "dropdown",
-        "options": [
-          {
-            "value": 0,
-            "label": "None"
-          },
-          {
-            "value": 1,
-            "label": "Set With Gas Pedal"
-          },
-          {
-            "value": 2,
-            "label": "Max Set Speed"
           }
         ],
         "parent_key": "SpeedLimitController",
@@ -2383,8 +2382,8 @@
       {
         "key": "ShowSLCOffset",
         "label": "Show Speed Limit Offset",
-        "description": "Show the current offset from the posted limit on the driving screen.",
-        "picker_description": "Shows the current offset from the posted limit.",
+        "description": "Show the current offset on the compact driving display. The unified Max Set / Speed Limit card always shows nonzero offsets.",
+        "picker_description": "Shows the offset on the compact display; the unified card always shows nonzero offsets.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "SpeedLimitController",
@@ -2792,9 +2791,9 @@
       },
       {
         "key": "PedalsOnUI",
-        "label": "Gas / Brake Pedal Indicators",
-        "description": "On-screen gas and brake indicators.\n\nDynamic: Opacity changes according to how much openpilot is accelerating or braking\nStatic: Full when active, dim when not",
-        "picker_description": "Shows gas and brake indicators on the driving screen.",
+        "label": "Pedal-Responsive Wheel",
+        "description": "Tint the on-screen steering-wheel icon green while accelerating and red while braking. Also show gas and brake indicators.\n\nDynamic: Opacity changes according to how much openpilot is accelerating or braking\nStatic: Full when active, dim when not",
+        "picker_description": "Colors the driving-screen wheel by acceleration and braking, with optional pedal indicators.",
         "data_type": "bool",
         "ui_type": "toggle",
         "is_parent_toggle": true,
@@ -3003,8 +3002,8 @@
       {
         "key": "UseVienna",
         "label": "Use Vienna-Style Speed Signs",
-        "description": "Show Vienna-style (EU) speed-limit signs instead of MUTCD (US).",
-        "picker_description": "Uses Vienna-style speed-limit signs.",
+        "description": "Use Vienna-style (EU) speed-limit signs on the compact driving display. The unified Max Set / Speed Limit card uses its own layout.",
+        "picker_description": "Uses Vienna-style signs on the compact display.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "NavigationUI",
@@ -3323,6 +3322,14 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "settings_tier": "simple"
+      },
+      {
+        "key": "GpuModelReadySound",
+        "label": "GPU Model Ready Sound",
+        "description": "Play a short chime when the external GPU model finishes loading. Driving alerts take priority.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
       }
     ]
   },
@@ -3549,6 +3556,20 @@
         "settings_tier": "simple"
       },
       {
+        "key": "TeslaWakeOnCAN",
+        "label": "Wake Comma with Tesla",
+        "description": "When enabled, your comma can wake up when your Tesla wakes up. When disabled, it normally powers on when you press the brake.",
+        "picker_description": "Allow your comma to wake up with your Tesla.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple",
+        "vehicle_makes": [
+          "Tesla"
+        ],
+        "requires_capability": "TeslaCANWakeAvailable",
+        "requires_offroad": true
+      },
+      {
         "key": "HKGRemoteStartBootsComma",
         "label": "Remote Start Boots Comma (HKG)",
         "description": "Use the remote-climate Hyundai/Kia/Genesis CAN-FD panda firmware at boot.\n\nRequired for EV remote-climate startup signal behavior.",
@@ -3568,9 +3589,9 @@
       },
       {
         "key": "GMAutoHold",
-        "label": "Volt Auto Hold",
-        "description": "Hold the car at a stop on supported non-CC-only Chevy Volts until the gas pedal is pressed.",
-        "picker_description": "Holds Chevy Volt brakes until the gas pedal is pressed.",
+        "label": "GM Auto Hold",
+        "description": "Hold supported GM vehicles at a stop until the gas pedal is pressed.",
+        "picker_description": "Holds supported GM vehicle brakes until the gas pedal is pressed.",
         "data_type": "bool",
         "ui_type": "toggle",
         "settings_tier": "simple"
@@ -3612,6 +3633,16 @@
         "settings_tier": "simple"
       },
       {
+        "key": "SubaruAvhStartup",
+        "label": "AVH On at Startup (Experimental)",
+        "description": "For the 2025 Subaru Legacy, request Auto Vehicle Hold once at startup while stopped in Park with the engine running. Manual choices are preserved. Enable before the next drive.",
+        "picker_description": "Requests AVH ON at startup on the 2025 Legacy.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "galaxy_only": true,
+        "settings_tier": "simple"
+      },
+      {
         "key": "SubaruStopStartOff",
         "label": "Stop/Start Off at Startup",
         "description": "For supported Subaru Outback 2023-24 and Legacy 2025 vehicles, send one momentary Stop/Start request after ignition while stationary and in Park or Neutral.",
@@ -3619,17 +3650,6 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "galaxy_only": true,
-        "settings_tier": "simple"
-      },
-      {
-        "key": "ClusterOffset",
-        "label": "Dashboard Speed Offset",
-        "description": "The speed offset openpilot uses to match the speed on the dashboard display.",
-        "data_type": "float",
-        "ui_type": "numeric",
-        "min": 1.0,
-        "max": 1.05,
-        "step": 0.001,
         "settings_tier": "simple"
       },
       {
@@ -3644,11 +3664,28 @@
       {
         "key": "ToyotaAutoHold",
         "label": "Toyota Auto Hold",
-        "description": "Hold the brakes at a stop on supported Toyota/Lexus vehicles when cruise main is available and cruise is not active.",
-        "picker_description": "Holds supported Toyota/Lexus brakes at stops when cruise is available.",
+        "description": "Hold the brake pedal for over one second at a complete stop with cruise main on and cruise disengaged to hold until you press the gas pedal. Normal cruise stop-and-go is unchanged.",
+        "picker_description": "Holds supported Toyota/Lexus brakes after a manual stop with cruise disengaged.",
         "data_type": "bool",
         "ui_type": "toggle",
         "galaxy_only": true,
+        "settings_tier": "simple"
+      },
+      {
+        "key": "ToyotaRadarMode",
+        "label": "RAV4 Radar (Experimental)",
+        "description": "Opt-in ARS510 radar on Toyota RAV4 2022-2025, including hybrids. ACC Target uses the radar's selected lead; Fused Tracks filters the full object list. Off preserves vision-only operation. Restart the device after changing this setting. Does not enable Alpha Long, restore AEB, or change tuning. Collect validation routes and remain ready to take over.",
+        "picker_description": "Experimental radar parsing for 2022-2025 RAV4s; disabled by default.",
+        "data_type": "int",
+        "ui_type": "dropdown",
+        "vehicle_makes": ["Toyota"],
+        "options": [
+          {"value": 0, "label": "Off"},
+          {"value": 1, "label": "ACC Target"},
+          {"value": 2, "label": "Fused Tracks"}
+        ],
+        "galaxy_only": true,
+        "requires_offroad": true,
         "settings_tier": "simple"
       },
       {
@@ -4653,6 +4690,17 @@
         "settings_tier": "simple"
       },
       {
+        "key": "AggressiveCoolingEnabled",
+        "label": "C3/C3X Aggressive Cooling",
+        "description": "Runs the fan on a lower, more aggressive temperature curve: the fan ramps up sooner and reacts faster to rising temperature, keeping the device meaningfully cooler on hot days at the cost of more fan noise.",
+        "picker_description": "Cooler-running, louder fan curve for comma 3/3X.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "DeviceManagement",
+        "settings_tier": "simple",
+        "requires_capability": "IsTiciOrTizi"
+      },
+      {
         "key": "UseKonikServer",
         "label": "Use Konik Server",
         "description": "Upload driving data to \"stable.konik.ai\" instead of \"connect.comma.ai\".",
@@ -4675,20 +4723,39 @@
       {
         "key": "ScreenBrightness",
         "label": "Screen Brightness (Offroad)",
-        "description": "The screen brightness while not driving.",
+        "description": "Use automatic brightness with an adjustable offset, or Manual to set a fixed brightness while parked.",
         "data_type": "int",
         "ui_type": "numeric",
-        "step": 1.0,
+        "galaxy_ui_type": "brightness",
+        "step": 1,
         "parent_key": "ScreenManagement",
-        "settings_tier": "simple"
+        "settings_tier": "advanced",
+        "default": 101,
+        "min": 0,
+        "max": 101
       },
       {
         "key": "ScreenBrightnessOnroad",
         "label": "Screen Brightness (Onroad)",
-        "description": "The screen brightness while driving.",
+        "description": "Choose Auto to follow ambient light with an adjustable offset, or Manual to set a fixed brightness while driving.",
         "data_type": "int",
         "ui_type": "numeric",
-        "step": 1.0,
+        "galaxy_ui_type": "brightness",
+        "step": 1,
+        "parent_key": "ScreenManagement",
+        "settings_tier": "advanced",
+        "default": 101,
+        "min": 0,
+        "max": 101
+      },
+      {
+        "key": "KeepScreenOnGpuLoading",
+        "label": "Keep Screen On While eGPU Loads",
+        "description": "Keep the driving screen awake while an eGPU model loads so you can watch its status. The normal timeout resumes when loading finishes. A manual Screen Off action still works.",
+        "picker_description": "Keep the driving screen awake during eGPU model loading.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": false,
         "parent_key": "ScreenManagement",
         "settings_tier": "simple"
       },
@@ -4705,36 +4772,141 @@
       {
         "key": "ScreenTimeout",
         "label": "Screen Timeout (Offroad)",
-        "description": "How long the screen stays on after being tapped while not driving.",
+        "description": "How long the parked screen stays awake after a touch.",
         "data_type": "int",
         "ui_type": "numeric",
         "min": 5.0,
         "max": 60.0,
         "step": 5.0,
         "parent_key": "ScreenManagement",
-        "settings_tier": "simple"
+        "settings_tier": "simple",
+        "unit": " seconds"
       },
       {
         "key": "ScreenTimeoutOnroad",
         "label": "Screen Timeout (Onroad)",
-        "description": "How long the screen stays on after being tapped while driving.",
+        "description": "How long the driving screen stays awake before Standby Mode turns it off.",
         "data_type": "int",
         "ui_type": "numeric",
         "min": 5.0,
         "max": 60.0,
         "step": 5.0,
-        "parent_key": "ScreenManagement",
-        "settings_tier": "simple"
+        "parent_key": "StandbyMode",
+        "settings_tier": "simple",
+        "unit": " seconds",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ]
       },
       {
         "key": "StandbyMode",
         "label": "Standby Mode",
-        "description": "Turn the screen off while driving and automatically wake it up for alerts or engagement state changes.",
-        "picker_description": "Turns the screen off while driving and wakes for alerts.",
+        "description": "Turn off the screen after the onroad timeout. Touch and ignition changes always wake it. Choose additional wake events below.",
+        "picker_description": "Turn off the driving screen after inactivity and choose additional wake events.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "ScreenManagement",
-        "settings_tier": "simple"
+        "settings_tier": "simple",
+        "is_parent_toggle": true
+      },
+      {
+        "key": "StandbyWakeEngage",
+        "label": "Engagement",
+        "description": "Wake the screen from Standby when driving assistance engages.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": true,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeDisengage",
+        "label": "Disengagement",
+        "description": "Wake the screen from Standby when driving assistance disengages.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": true,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeInfoAlert",
+        "label": "Informational alerts",
+        "description": "Wake the screen from Standby and keep it awake while an informational alert is displayed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": true,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeWarningAlert",
+        "label": "Warning alerts",
+        "description": "Wake the screen from Standby and keep it awake while a warning alert is displayed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": true,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeCriticalAlert",
+        "label": "Critical / takeover alerts",
+        "description": "Wake the screen from Standby and keep it awake while a critical or takeover alert is displayed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": true,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeTurnSignal",
+        "label": "Turn signals",
+        "description": "Wake the screen from Standby when a turn signal is activated.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": false,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "StandbyWakeButton",
+        "label": "Bluetooth or steering wheel button",
+        "description": "Wake the screen from Standby when a recognised Bluetooth, controller or steering wheel button is pressed, including buttons without an assigned action.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": false,
+        "parent_key": "StandbyMode",
+        "visible_when_all_true": [
+          "ScreenManagement",
+          "StandbyMode"
+        ],
+        "settings_tier": "advanced"
       }
     ]
   },
@@ -4848,6 +5020,31 @@
         "ui_type": "toggle",
         "is_parent_toggle": true,
         "settings_tier": "simple"
+      },
+      {
+        "key": "StingerObjectShadow",
+        "label": "Stinger Object Logging Beta",
+        "description": "Collect candidate object data on the 2022-2023 Kia Stinger for validation. Logging only: this does not enable radar-based braking or change steering. Default off. Keep driving normally, stay attentive, and upload full rlogs with bookmarked observations.",
+        "picker_description": "Read-only Stinger object validation; no braking or steering changes.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "galaxy_only": true,
+        "vehicle_makes": ["Kia"],
+        "parent_key": "GalaxyDeveloperMode",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "ClusterOffset",
+        "label": "Dashboard Speed Offset",
+        "description": "Multiplier for dashboard speed. 1x = no offset; 1.05x = 5% faster.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "unit": "x",
+        "min": 1.0,
+        "max": 1.05,
+        "step": 0.001,
+        "parent_key": "GalaxyDeveloperMode",
+        "settings_tier": "advanced"
       },
       {
         "key": "GalaxyMobileDefault",
