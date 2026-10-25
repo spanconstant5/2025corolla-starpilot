@@ -63,6 +63,19 @@ class TestToyotaTss3CorollaSigner(unittest.TestCase):
     self.assertFalse(self.safety.safety_tx_hook(
       libsafety_py.make_CANPacket(0x777, 1, bytes((7, 0xC9, 0xA8, 1, 0, 0, 0, 0)))))
 
+  def test_live_source_plane_satisfies_rx_checks(self):
+    live_frames = {
+      0x025: bytes.fromhex("0ff800005fff0092000000000000000000000000000000000000000091f9fcc0"),
+      0x0AA: bytes.fromhex("1abd1a6f1aba1a6f"),
+      0x101: bytes.fromhex("8800003a000000cc"),
+      0x116: bytes.fromhex("000200007a353eaa"),
+      0x08A: bytes.fromhex("000000008000001203260003267fff007fffff3600000000000039009064215b"),
+    }
+    for address, data in live_frames.items():
+      self.assertTrue(self.safety.safety_rx_hook(libsafety_py.make_CANPacket(address, 2, data)))
+    self.safety.safety_tick_current_safety_config()
+    self.assertTrue(self.safety.safety_config_valid())
+
   def test_host_08a_requires_arm_and_keeps_longitudinal_inactive(self):
     self.assertFalse(self.safety.safety_tx_hook(self.host_application()))
     self.assertTrue(self.safety.safety_tx_hook(self.admin(True)))

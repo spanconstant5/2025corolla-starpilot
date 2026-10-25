@@ -49,6 +49,12 @@ class TestToyotaTss3SharedDbc(unittest.TestCase):
     self.assertEqual(parsers[Bus.pt].bus, 2)
     self.assertEqual(parsers[Bus.cam].bus, 2)
 
+  def test_corolla_optional_bsm_does_not_gate_can_validity(self):
+    cp = CarInterface.get_non_essential_params(CAR.TOYOTA_COROLLA_TSS3)
+    cp.enableBsm = True
+    source_parser = CarState.get_can_parsers(cp)[Bus.cam]
+    self.assertEqual(source_parser.message_states[0x3F6].frequency, 0)
+
   def test_corolla_inactive_application_matches_live_known_answer(self):
     packer = CANPacker("toyota_tss3_pt_generated")
     application = build_host_application(

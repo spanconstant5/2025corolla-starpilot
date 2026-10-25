@@ -429,7 +429,11 @@ class CarState(CarStateBase):
         ("TSS3_LKAS_HUD", 1),
       ]
       if CP.enableBsm:
-        source_messages.append(("BSM", 1))
+        # This Corolla's native bus-2 BSM stream disappears after startup and
+        # continues only as forwarded TX receipts (src=0x82). Keep decoding
+        # native frames when present, but never make optional BSM availability
+        # invalidate the control-critical source parser.
+        source_messages.append(("BSM", 0))
       return {
         # Live route evidence shows the complete native stream on bus 2. The
         # bus-0 copy is a forwarded TX stream whose records are split between

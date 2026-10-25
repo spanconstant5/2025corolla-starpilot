@@ -308,11 +308,13 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
       .angle_deg_to_can = 17.451171875F,
       .frequency = 100U,
     };
+#ifdef CANFD
     static const AngleSteeringParams TOYOTA_COROLLA_ANGLE_PARAMS = {
       .slip_factor = 0.0F,
       .steer_ratio = 13.9F,
       .wheelbase = 2.70F,
     };
+#endif
 
     const bool signer_admin = !msg->fd && (GET_LEN(msg) == 8U) &&
                               (msg->bus == 0U) && (msg->addr == 0x777U) &&
@@ -321,8 +323,10 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
                                   !msg->fd && (GET_LEN(msg) == 8U) &&
                                   (msg->bus == 0U) && (msg->addr == 0x777U) &&
                                   ((msg->data[0] & 0xC0U) == 0x80U);
+#ifdef CANFD
     const bool host_08a = toyota_tss3_08a_host &&
                           (msg->bus == 0U) && (msg->addr == 0x8AU);
+#endif
     tx = oracle_transport;
 
     if (signer_admin) {
@@ -343,6 +347,10 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
       }
     }
 
+    // CAN-FD host applications only exist on H7 pandas. Keeping this block
+    // out of F4 builds also prevents any 32-byte payload access on the F4's
+    // physically 8-byte CANPacket_t storage.
+#ifdef CANFD
     if (host_08a) {
       tx = false;
       bool application_shape = toyota_tss3_08a_replacement_active &&
@@ -382,6 +390,7 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
         tx = actuation_valid;
       }
     }
+#endif
 
     return tx;
   }
