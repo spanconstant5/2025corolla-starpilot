@@ -45,6 +45,7 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["signer"]["request_tx_rejected_count"] == 0
   assert result["signer"]["complete_request_applications"] == 1
   assert result["signer"]["request_application_longitudinal_nonzero_count"] == 0
+  assert result["signer"]["request_application_sequence_mismatch_count"] == 0
   assert result["signer"]["responses_0x7a9"]["count"] == 1
   assert result["signer"]["host_publications_0x08a"]["count"] == 1
   assert result["signer"]["bus_0_tx_receipts_0x08a"]["count"] == 1
@@ -57,3 +58,17 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["signer"]["transport_log_events"] == [
     "Toyota TSS3 request plane host_08a_active: {}",
   ]
+
+
+def test_route_evidence_detects_carrier_application_sequence_mismatch():
+  events = [Event(kind="sendcan", logMonoTime=1_000_000_000, sendcan=[
+    can_frame(0x777, 0, bytes.fromhex("810000000880002d")),
+    can_frame(0x777, 0, bytes.fromhex("904700000000007f")),
+    can_frame(0x777, 0, bytes.fromhex("a1ff007fff0000c0")),
+    can_frame(0x777, 0, bytes.fromhex("b000100032000000")),
+  ])]
+
+  result = analyze_events(events)
+
+  assert result["signer"]["complete_request_applications"] == 1
+  assert result["signer"]["request_application_sequence_mismatch_count"] == 1

@@ -12,6 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
+| Runtime signer preflight | Alignment fixed, route validation pending | The October 26 post-install route had 71/71 carrier/application sequence mismatches and no `0x7A9`. Runtime now derives the application's six-bit sequence from the outer carrier, reproducing the passing installer request on its first probe. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -46,6 +47,13 @@ the fix produces zero invalid Panda RX checks. A final parser invalid state at
 the end of one short log was caused only by the recording ending 157 ms after
 its last wheel-speed frame.
 
+The October 26 installer archive contains four successful status-zero live
+probes, including a 13.43 ms response immediately before the stationary route.
+The route then exposed a deterministic runtime-only mismatch: every one of its
+71 complete applications used an application sequence one behind its outer
+carrier sequence. The aligned transport starts with the exact installer-proven
+sequence-1 carrier and remains aligned through carrier wrap.
+
 Run the offline report with:
 
 ```bash
@@ -57,9 +65,12 @@ The report separates native `0x08A`, candidate `0x160`, signer `0x7A9`, host
 `sendcan` publications, `0x777` and `0x08A` TX receipts, payload-matched host
 acceptance, and the transport lifecycle records. It also reconstructs complete
 four-frame Corolla signer applications and independently checks both redundant
-longitudinal fields for zero. Forwarded stock `0x08A` also produces TX receipts
-and is never counted as host acceptance without a matching `sendcan` frame. The
-report also lists which bytes changed in native candidate frames.
+longitudinal fields for zero. It also requires each application's six-bit
+`REQUEST_SEQUENCE` to equal the low six bits of the outer carrier sequence; the
+first runtime preflight therefore reproduces the installer's proven sequence-1
+request byte for byte. Forwarded stock `0x08A` also produces TX receipts and is
+never counted as host acceptance without a matching `sendcan` frame. The report
+also lists which bytes changed in native candidate frames.
 
 ## In-car gate order
 
@@ -74,7 +85,7 @@ report also lists which bytes changed in native candidate frames.
    Require a `signer_response_live` record, a `host_08a_active` record, accepted
    `0x777` and `0x08A` publications, zero rejected publications, and zero nonzero
    longitudinal fields in both reconstructed signer applications and host
-   publications.
+   publications. Also require zero carrier/application sequence mismatches.
 3. With a spotter on private, controlled pavement, validate low-speed lateral
    tracking and driver override. Stop on any cluster fault, screen instability,
    request-plane authority failure, or missing signed-publication cadence.

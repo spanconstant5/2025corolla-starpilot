@@ -78,6 +78,7 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   host_longitudinal_nonzero = 0
   signer_applications = 0
   signer_application_longitudinal_nonzero = 0
+  signer_application_sequence_mismatch = 0
   signer_request_tx_accepted = 0
   signer_request_tx_rejected = 0
   host_publication_rejected = 0
@@ -123,9 +124,12 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
             if ((headers[0] & 0x0F) == (headers[2] & 0x0F) and
                 (headers[1] & 0x0F) == (headers[3] & 0x0F)):
               application = b"".join(fragment[1:] for fragment in signer_application_fragments)
+              carrier_sequence = (headers[0] & 0x0F) | ((headers[1] & 0x0F) << 4)
               signer_applications += 1
               if application[8:10] != b"\0\0" or application[11:13] != b"\0\0":
                 signer_application_longitudinal_nonzero += 1
+              if application[26] != (carrier_sequence & 0x3F):
+                signer_application_sequence_mismatch += 1
             signer_application_fragments = []
         elif address == 0x08A:
           host_08a.observe(bus, data)
@@ -169,6 +173,7 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
       "request_tx_rejected_count": signer_request_tx_rejected,
       "complete_request_applications": signer_applications,
       "request_application_longitudinal_nonzero_count": signer_application_longitudinal_nonzero,
+      "request_application_sequence_mismatch_count": signer_application_sequence_mismatch,
       "responses_0x7a9": signer_responses.as_dict(),
       "host_publications_0x08a": host_08a.as_dict(),
       "bus_0_tx_receipts_0x08a": bus_0_tx_receipts_08a.as_dict(),

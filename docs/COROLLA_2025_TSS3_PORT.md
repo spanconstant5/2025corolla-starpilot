@@ -39,6 +39,11 @@ The EPS returns a sequence-matched `0x7A9` response. StarPilot appends its
 four-byte security trailer to the original application and publishes the
 signed 32-byte `0x08A` on bus 0.
 
+The application's six-bit `REQUEST_SEQUENCE` is the low six bits of the outer
+carrier sequence. This preserves the relationship used by the live installer
+probe, including across the carrier's 255-to-1 wrap, and makes the first
+runtime preflight identical to the known-answer request below.
+
 The transport supports up to eight pending generations and uses a 90 ms
 publication deadline. When a later response arrives after an older response
 was dropped, the older request is marked superseded so it cannot stall the

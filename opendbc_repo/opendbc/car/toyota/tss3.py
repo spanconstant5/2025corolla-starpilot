@@ -177,7 +177,6 @@ class ToyotaTss3RequestTransport:
     self.control_started_ns = 0
 
     self.next_oracle_sequence = 1
-    self.next_request_sequence = 0
     self.pending_requests: deque[SignRequest] = deque()
     self.requests_by_sequence: dict[int, SignRequest] = {}
     self.preflight_request: SignRequest | None = None
@@ -457,9 +456,11 @@ class ToyotaTss3RequestTransport:
       long_active=False,
       accel=0.0,
       set_speed_kph=0.0,
-      request_sequence=self.next_request_sequence,
+      # The proven installer request uses the carrier sequence in the
+      # application's six-bit REQUEST_SEQUENCE field. Keep them aligned so
+      # runtime starts with the exact same seq=1 known-answer request.
+      request_sequence=seq & 0x3F,
     )
-    self.next_request_sequence = (self.next_request_sequence + 1) & 0x3F
     self.preflight_request = SignRequest(seq, application, self.control_epoch, now_ns)
     self.last_preflight_request_ns = now_ns
     self.preflight_requests += 1
@@ -483,9 +484,8 @@ class ToyotaTss3RequestTransport:
       long_active=self.control_long_active,
       accel=self.control_accel,
       set_speed_kph=self.control_set_speed_kph,
-      request_sequence=self.next_request_sequence,
+      request_sequence=seq & 0x3F,
     )
-    self.next_request_sequence = (self.next_request_sequence + 1) & 0x3F
     request = SignRequest(seq, application, self.control_epoch, now_ns)
     self.pending_requests.append(request)
     self.requests_by_sequence[seq] = request
@@ -524,7 +524,6 @@ class ToyotaTss3RequestTransport:
         self.last_failure_reason = ""
         self.session_open = True
         self._reset_diagnostics()
-        self.next_request_sequence = 0
         self.control_started_ns = 0
         self.last_publication_ns = 0
 

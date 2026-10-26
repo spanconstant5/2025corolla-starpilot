@@ -158,6 +158,10 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
       now_nanos=1_000_000_000,
     )
     sequence, application = corolla_request_from_sends(sends)
+    self.assertEqual(sequence, 1)
+    self.assertEqual(sends, build_oracle_transport(1, bytes.fromhex(
+      "0000000880002d4700000000007fff007fff0000c000100032000100"
+    ), COROLLA_ORACLE_PROFILE))
     self.assertFalse(transport.signer_ready())
     self.assertEqual(application[8:10], bytes(2))
     self.assertEqual(application[11:13], bytes(2))
@@ -288,7 +292,29 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
 
     self.assertEqual(len(self.transport.pending_requests), 4)
     self.assertEqual([request.sequence for request in self.transport.pending_requests], sequences)
-    self.assertEqual([request.application[26] for request in self.transport.pending_requests], [0, 1, 2, 3])
+    self.assertEqual([request.application[26] for request in self.transport.pending_requests], sequences)
+
+  def test_application_sequence_tracks_carrier_across_wrap(self):
+    transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)
+    transport.observe([], True)
+    transport.next_oracle_sequence = COROLLA_ORACLE_PROFILE.sequence_max
+    kwargs = {
+      "enabled": True,
+      "lat_active": True,
+      "target_angle_deg": 0.0,
+      "long_active": False,
+      "accel": 0.0,
+      "set_speed_kph": 70.0,
+    }
+    sends = transport.update_control(**kwargs, now_nanos=1_000_000_000)
+    seq, application = corolla_request_from_sends(sends)
+    self.assertEqual(seq, COROLLA_ORACLE_PROFILE.sequence_max)
+    self.assertEqual(application[26], seq & 0x3F)
+
+    sends = transport.update_control(**kwargs, now_nanos=1_010_000_000)
+    seq, application = corolla_request_from_sends(sends)
+    self.assertEqual(seq, 1)
+    self.assertEqual(application[26], 1)
 
   def test_pipeline_publishes_at_100hz_after_signer_latency_is_hidden(self):
     seq0 = self.start_request(1_000_000_000)
@@ -299,7 +325,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.transport.observe(response(1_019_000_000, seq0), True)
     sends = self.update_control(1_020_000_000, angle=2.0)
     host0 = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host0.dat[26], 0)
+    self.assertEqual(host0.dat[26], seq0 & 0x3F)
     seq2 = request_sequence_from_sends(sends)
 
     # Confirm the first host publication so subsequent signed frames can flow.
@@ -309,13 +335,13 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.transport.observe(response(1_029_000_000, seq1), True)
     sends = self.update_control(1_030_000_000, angle=3.0)
     host1 = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host1.dat[26], 1)
+    self.assertEqual(host1.dat[26], seq1 & 0x3F)
     seq3 = request_sequence_from_sends(sends)
 
     self.transport.observe(response(1_039_000_000, seq2), True)
     sends = self.update_control(1_040_000_000, angle=4.0)
     host2 = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host2.dat[26], 2)
+    self.assertEqual(host2.dat[26], seq2 & 0x3F)
 
     self.assertNotEqual(seq0, seq1)
     self.assertNotEqual(seq1, seq2)
@@ -332,7 +358,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.transport.observe(response(1_019_000_000, seq1), True)
     sends = self.update_control(1_020_000_000, angle=2.0, accel=-0.5)
     host = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host.dat[26], 1)
+    self.assertEqual(host.dat[26], seq1 & 0x3F)
     self.assertEqual(host.dat[8:10], (-250).to_bytes(2, "big", signed=True))
     self.assertNotIn(seq0, self.transport.requests_by_sequence)
     self.assertEqual(self.transport.diagnostic_snapshot()["requests_superseded"], 1)
@@ -349,13 +375,13 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
 
     sends = self.update_control(1_020_000_000)
     host0 = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host0.dat[26], 0)
+    self.assertEqual(host0.dat[26], seq0 & 0x3F)
     self.transport.observe(packets(1_020_000_001, CanData(host0.address, host0.dat,
                                                          DOWNSTREAM_BUS + PANDA_RETURNED_OFFSET)), True)
 
     sends = self.update_control(1_030_000_000)
     host1 = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host1.dat[26], 1)
+    self.assertEqual(host1.dat[26], seq1 & 0x3F)
 
   def test_signer_error_skips_failed_generation_instead_of_retrying_it(self):
     seq0 = self.start_request(1_000_000_000)
@@ -366,7 +392,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     sends = self.update_control(1_020_000_000, angle=2.0, accel=-0.5)
 
     host = next(msg for msg in sends if msg.address == NATIVE_08A_ADDR)
-    self.assertEqual(host.dat[26], 1)
+    self.assertEqual(host.dat[26], seq1 & 0x3F)
     self.assertEqual(host.dat[8:10], (-250).to_bytes(2, "big", signed=True))
     self.assertNotIn(seq0, self.transport.requests_by_sequence)
     self.assertEqual(self.transport.diagnostic_snapshot()["responses_failed"], 1)
