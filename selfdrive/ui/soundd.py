@@ -213,8 +213,9 @@ class Soundd:
       if standard_path.exists():
         sounds_path = standard_path
 
-    stock_filename = "engage.wav" if filename == "startup.wav" else filename
-    stock_path = Path(BASEDIR) / "selfdrive" / "assets" / "sounds" / stock_filename
+    stock_path = Path(BASEDIR) / "selfdrive" / "assets" / "sounds" / filename
+    if filename == "startup.wav" and not stock_path.exists():
+      stock_path = stock_path.with_name("engage.wav")
 
     candidates = []
     for path in (random_events_path, sounds_path, stock_path):

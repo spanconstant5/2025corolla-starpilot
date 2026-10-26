@@ -48,6 +48,7 @@ class TestToyotaInterfaces:
 
     assert not state.canValid
     assert not state.steerFaultTemporary
+    assert state.blockPcmEnable
     assert starpilot_state is not None
 
   def test_car_sets(self):
@@ -827,7 +828,8 @@ class TestToyotaCarController:
     inactive.actuators.longControlState = structs.CarControl.Actuators.LongControlState.off
     output, sends = controller.update(inactive.as_reader(), cs, 1_000_000_000, SimpleNamespace())
     assert output.steeringAngleDeg == pytest.approx(18.0)
-    assert sends == []
+    assert len([msg for msg in sends if msg.address == 0x777]) == 4
+    assert not any(msg.address == 0x08A for msg in sends)
 
     active = structs.CarControl(enabled=True, latActive=True)
     active.actuators.longControlState = structs.CarControl.Actuators.LongControlState.off

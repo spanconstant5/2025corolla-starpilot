@@ -61,16 +61,27 @@ def _transport_log_message(raw: str) -> str | None:
   return None
 
 
+def _is_corolla_signer_fragment(data: bytes) -> bool:
+  return len(data) == 8 and data[0] >> 4 in (8, 9, 10, 11)
+
+
 def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   native_08a = FrameEvidence()
   native_160 = FrameEvidence()
   signer_responses = FrameEvidence()
   signer_requests = FrameEvidence()
+  signer_request_tx_receipts = FrameEvidence()
   host_08a = FrameEvidence()
   bus_0_tx_receipts_08a = FrameEvidence()
   matched_host_08a_echo = FrameEvidence()
   host_payloads: Counter[bytes] = Counter()
   host_longitudinal_nonzero = 0
+  signer_applications = 0
+  signer_application_longitudinal_nonzero = 0
+  signer_request_tx_accepted = 0
+  signer_request_tx_rejected = 0
+  host_publication_rejected = 0
+  signer_application_fragments: list[bytes] = []
   transport_events: list[str] = []
   start_ns: int | None = None
   end_ns: int | None = None
@@ -94,7 +105,28 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
       address, bus, data = int(frame.address), int(frame.src), bytes(frame.dat)
       if which == "sendcan":
         if address == 0x777:
+          if not _is_corolla_signer_fragment(data):
+            signer_application_fragments = []
+            continue
           signer_requests.observe(bus, data)
+          fragment = data[0] >> 4
+          expected_fragment = 8 + len(signer_application_fragments)
+          if fragment == 8:
+            signer_application_fragments = [data]
+          elif signer_application_fragments and fragment == expected_fragment:
+            signer_application_fragments.append(data)
+          else:
+            signer_application_fragments = []
+
+          if len(signer_application_fragments) == 4:
+            headers = [fragment[0] for fragment in signer_application_fragments]
+            if ((headers[0] & 0x0F) == (headers[2] & 0x0F) and
+                (headers[1] & 0x0F) == (headers[3] & 0x0F)):
+              application = b"".join(fragment[1:] for fragment in signer_application_fragments)
+              signer_applications += 1
+              if application[8:10] != b"\0\0" or application[11:13] != b"\0\0":
+                signer_application_longitudinal_nonzero += 1
+            signer_application_fragments = []
         elif address == 0x08A:
           host_08a.observe(bus, data)
           host_payloads[data] += 1
@@ -109,25 +141,40 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
           native_160.observe(bus, data)
         elif address == 0x7A9:
           signer_responses.observe(bus, data)
-      elif address == 0x08A:
-        bus_0_tx_receipts_08a.observe(bus, data)
-        # Forwarded native 0x08A traffic also creates bus-0 TX receipts. Only
-        # call a receipt a host acceptance when its complete payload matches a
-        # frame observed on sendcan during this route.
-        if host_payloads[data] > 0:
-          matched_host_08a_echo.observe(bus, data)
-          host_payloads[data] -= 1
+      else:
+        if address == 0x777 and _is_corolla_signer_fragment(data):
+          signer_request_tx_receipts.observe(bus, data)
+          signer_request_tx_accepted += int(bus == 0x80)
+          signer_request_tx_rejected += int(bus == 0xC0)
+        elif address == 0x08A:
+          bus_0_tx_receipts_08a.observe(bus, data)
+          # Forwarded native 0x08A traffic also creates bus-0 TX receipts. Only
+          # call a receipt a host acceptance when its complete payload matches a
+          # frame observed on sendcan during this route.
+          if host_payloads[data] > 0 and bus in (0x80, 0xC0):
+            if bus == 0x80:
+              matched_host_08a_echo.observe(bus, data)
+            else:
+              host_publication_rejected += 1
+            host_payloads[data] -= 1
 
   duration_s = 0.0 if start_ns is None or end_ns is None else round((end_ns - start_ns) / 1e9, 3)
   return {
-    "schema": "corolla-tss3-route-evidence-v1",
+    "schema": "corolla-tss3-route-evidence-v2",
     "duration_s": duration_s,
     "signer": {
       "requests_0x777": signer_requests.as_dict(),
+      "request_tx_receipts_0x777": signer_request_tx_receipts.as_dict(),
+      "request_tx_accepted_count": signer_request_tx_accepted,
+      "request_tx_rejected_count": signer_request_tx_rejected,
+      "complete_request_applications": signer_applications,
+      "request_application_longitudinal_nonzero_count": signer_application_longitudinal_nonzero,
       "responses_0x7a9": signer_responses.as_dict(),
       "host_publications_0x08a": host_08a.as_dict(),
       "bus_0_tx_receipts_0x08a": bus_0_tx_receipts_08a.as_dict(),
       "matched_host_publication_echoes_0x08a": matched_host_08a_echo.as_dict(),
+      "host_publication_accepted_count": matched_host_08a_echo.count,
+      "host_publication_rejected_count": host_publication_rejected,
       "host_longitudinal_nonzero_count": host_longitudinal_nonzero,
       "transport_log_events": transport_events,
     },

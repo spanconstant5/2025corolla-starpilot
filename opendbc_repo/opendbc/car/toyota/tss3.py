@@ -32,6 +32,7 @@ ORACLE_PRIVATE_SID = 0xC9
 ORACLE_SEQUENCE_MAX = 0x1F
 ORACLE_MAX_PENDING_GENERATIONS = 8
 ORACLE_PUBLICATION_DEADLINE_NS = 90_000_000
+ORACLE_PREFLIGHT_INTERVAL_NS = 1_000_000_000
 
 ORACLE_CARRIER_C8_SIX_FRAME = "c8-six-frame"
 ORACLE_CARRIER_FUNCTIONAL_NIBBLE4 = "functional-nibble4"
@@ -179,6 +180,10 @@ class ToyotaTss3RequestTransport:
     self.next_request_sequence = 0
     self.pending_requests: deque[SignRequest] = deque()
     self.requests_by_sequence: dict[int, SignRequest] = {}
+    self.preflight_request: SignRequest | None = None
+    self.last_preflight_request_ns = 0
+    self.last_signer_response_ns = 0
+    self.signer_live = False
     self.pending_sends: list[CanData] = []
 
     self.active = False
@@ -202,6 +207,10 @@ class ToyotaTss3RequestTransport:
     self.max_pending_requests = 0
     self.last_response_latency_ms: float | None = None
     self.max_response_latency_ms: float | None = None
+    self.preflight_requests = 0
+    self.preflight_responses = 0
+    self.preflight_failures = 0
+    self.preflight_timeouts = 0
 
   def diagnostic_snapshot(self) -> dict[str, object]:
     """Small route-log-safe summary for post-drive signer validation."""
@@ -221,6 +230,11 @@ class ToyotaTss3RequestTransport:
       "max_pending_requests": self.max_pending_requests,
       "last_response_latency_ms": self.last_response_latency_ms,
       "max_response_latency_ms": self.max_response_latency_ms,
+      "preflight_requests": self.preflight_requests,
+      "preflight_responses": self.preflight_responses,
+      "preflight_failures": self.preflight_failures,
+      "preflight_timeouts": self.preflight_timeouts,
+      "signer_live": self.signer_live,
       "authority_failed": self.authority_failed,
       "last_failure_reason": self.last_failure_reason,
     }
@@ -230,6 +244,10 @@ class ToyotaTss3RequestTransport:
 
   def authority_unavailable(self) -> bool:
     return self.control_enabled and self.authority_failed
+
+  def signer_ready(self) -> bool:
+    """Whether a recent inactive or active request proved signer authority."""
+    return self.can_valid and self.signer_live and not self.authority_failed
 
   def _record_failure(self, reason: str) -> None:
     self.last_failure_reason = reason
@@ -304,6 +322,27 @@ class ToyotaTss3RequestTransport:
     if not 1 <= seq <= self.oracle_profile.sequence_max or data[3] != (seq ^ 0xFF):
       return
 
+    if self.preflight_request is not None and seq == self.preflight_request.sequence:
+      request = self.preflight_request
+      self.preflight_request = None
+      if now_ns - request.generation_started_ns > ORACLE_PUBLICATION_DEADLINE_NS:
+        self.signer_live = False
+        self.preflight_timeouts += 1
+      elif status != 0:
+        self.signer_live = False
+        self.preflight_failures += 1
+        carlog.warning(f"Toyota TSS3 request plane preflight signer status {status}")
+      else:
+        first_live_response = not self.signer_live
+        self.signer_live = True
+        self.last_signer_response_ns = now_ns
+        self.preflight_responses += 1
+        self.authority_failed = False
+        self.last_failure_reason = ""
+        if first_live_response:
+          self._log_diagnostics("preflight_signer_live")
+      return
+
     request = self.requests_by_sequence.get(seq)
     if request is None or request.control_epoch != self.control_epoch:
       self.responses_unmatched += 1
@@ -332,6 +371,8 @@ class ToyotaTss3RequestTransport:
       carlog.warning(f"Toyota TSS3 request plane signer status {status}")
     else:
       request.trailer = data[4:8]
+      self.signer_live = True
+      self.last_signer_response_ns = now_ns
       latency_ms = round((now_ns - request.generation_started_ns) / 1_000_000, 3)
       self.last_response_latency_ms = latency_ms
       self.max_response_latency_ms = latency_ms if self.max_response_latency_ms is None else max(self.max_response_latency_ms, latency_ms)
@@ -342,6 +383,11 @@ class ToyotaTss3RequestTransport:
 
   def observe(self, can_packets: list[tuple[int, list[CanData]]], can_valid: bool) -> None:
     self.can_valid = bool(can_valid)
+    if not self.can_valid:
+      self.signer_live = False
+      self.preflight_request = None
+      self.last_preflight_request_ns = 0
+      self.last_signer_response_ns = 0
     if not self.can_valid and (self.active or self.arm_pending):
       self._authority_failure("can_invalid")
 
@@ -380,9 +426,44 @@ class ToyotaTss3RequestTransport:
     for _ in range(self.oracle_profile.sequence_max):
       seq = self.next_oracle_sequence
       self.next_oracle_sequence = (seq % self.oracle_profile.sequence_max) + 1
-      if seq not in self.requests_by_sequence:
+      if seq not in self.requests_by_sequence and (self.preflight_request is None or seq != self.preflight_request.sequence):
         return seq
     return None
+
+  def _update_preflight(self, now_ns: int) -> None:
+    """Probe signer liveness while disengaged without publishing signed control."""
+    if not self.can_valid:
+      return
+
+    if self.preflight_request is not None:
+      if now_ns - self.preflight_request.generation_started_ns <= ORACLE_PUBLICATION_DEADLINE_NS:
+        return
+      self.preflight_request = None
+      self.signer_live = False
+      self.preflight_timeouts += 1
+      carlog.warning("Toyota TSS3 request plane preflight signer timeout")
+
+    reference_ns = self.last_signer_response_ns or self.last_preflight_request_ns
+    if reference_ns and now_ns - reference_ns < ORACLE_PREFLIGHT_INTERVAL_NS:
+      return
+
+    seq = self._allocate_oracle_sequence()
+    if seq is None:
+      return
+    application = build_host_application(
+      self.packer,
+      lat_active=False,
+      target_angle_raw=0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      request_sequence=self.next_request_sequence,
+    )
+    self.next_request_sequence = (self.next_request_sequence + 1) & 0x3F
+    self.preflight_request = SignRequest(seq, application, self.control_epoch, now_ns)
+    self.last_preflight_request_ns = now_ns
+    self.preflight_requests += 1
+    self.pending_sends.extend(build_oracle_transport(seq, application, self.oracle_profile))
 
   def _queue_signing_latest(self, now_ns: int) -> None:
     self._prune_head()
@@ -438,6 +519,7 @@ class ToyotaTss3RequestTransport:
       self.control_epoch += 1
       self._invalidate_actuation()
       if enabled and not self.control_enabled:
+        self.preflight_request = None
         self.authority_failed = False
         self.last_failure_reason = ""
         self.session_open = True
@@ -455,6 +537,7 @@ class ToyotaTss3RequestTransport:
 
     if not enabled:
       self._release()
+      self._update_preflight(now_nanos)
     else:
       self._expire(now_nanos)
       if not self.authority_failed:

@@ -28,6 +28,7 @@ into a fault.
 During normal control, the request transport writes compact lifecycle records
 to the route log:
 
+- first successful inactive signer preflight, which gates PCM engagement;
 - first valid EPS signer response and latency;
 - first Panda-accepted host `0x08A` publication;
 - request, response, supersede, publication, acceptance, and rejection totals
@@ -53,10 +54,12 @@ python3 tools/corolla_tss3_route_evidence.py /path/to/rlog.zst \
 ```
 
 The report separates native `0x08A`, candidate `0x160`, signer `0x7A9`, host
-`sendcan` publications, all bus-0 TX receipts, payload-matched host acceptance,
-and the transport lifecycle records. Forwarded stock `0x08A` also produces TX
-receipts and is never counted as host acceptance without a matching `sendcan`
-frame. The report also lists which bytes changed in native candidate frames.
+`sendcan` publications, `0x777` and `0x08A` TX receipts, payload-matched host
+acceptance, and the transport lifecycle records. It also reconstructs complete
+four-frame Corolla signer applications and independently checks both redundant
+longitudinal fields for zero. Forwarded stock `0x08A` also produces TX receipts
+and is never counted as host acceptance without a matching `sendcan` frame. The
+report also lists which bytes changed in native candidate frames.
 
 ## In-car gate order
 
@@ -65,11 +68,13 @@ frame. The report also lists which bytes changed in native candidate frames.
    has returned to READY without affirmative Brake/EPS fault bits.
 2. With the service brake firmly held, select Drive, release the parking brake,
    close all doors, enable cruise main, and engage/disengage once without allowing
-   the car to move. Park is not an engageable gear and cannot exercise the normal
-   request plane. Require a
-   `signer_response_live` record, a `host_08a_active` record, accepted
-   publications, zero rejected publications, and zero nonzero longitudinal
-   fields.
+   the car to move. Before the engagement edge, require a
+   `preflight_signer_live` record; otherwise PCM engagement remains blocked. Park
+   is not an engageable gear and cannot exercise the normal request plane.
+   Require a `signer_response_live` record, a `host_08a_active` record, accepted
+   `0x777` and `0x08A` publications, zero rejected publications, and zero nonzero
+   longitudinal fields in both reconstructed signer applications and host
+   publications.
 3. With a spotter on private, controlled pavement, validate low-speed lateral
    tracking and driver override. Stop on any cluster fault, screen instability,
    request-plane authority failure, or missing signed-publication cadence.

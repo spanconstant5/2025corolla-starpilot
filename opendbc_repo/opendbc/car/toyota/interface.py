@@ -23,8 +23,14 @@ class CarInterface(CarInterfaceBase):
     ret, fp_ret = super().update(can_packets, starpilot_toggles)
     if self.CC.tss3_request_transport is not None:
       self.CC.observe_tss3_request_plane(can_packets, ret.canValid)
-      authority_unavailable = self.CC.tss3_request_transport.authority_unavailable()
-      ret.steerFaultTemporary = ret.steerFaultTemporary or authority_unavailable
+      transport = self.CC.tss3_request_transport
+      authority_unavailable = transport.authority_unavailable()
+      signer_not_ready = not transport.signer_ready()
+      signer_unavailable = transport.can_valid and signer_not_ready
+      # A successful inactive challenge is required before accepting a PCM
+      # engagement edge. This never arms the request plane or publishes 0x08A.
+      ret.blockPcmEnable = ret.blockPcmEnable or signer_not_ready
+      ret.steerFaultTemporary = ret.steerFaultTemporary or authority_unavailable or signer_unavailable
       if self.CP.openpilotLongitudinalControl:
         ret.accFaulted = ret.accFaulted or authority_unavailable
     return ret, fp_ret

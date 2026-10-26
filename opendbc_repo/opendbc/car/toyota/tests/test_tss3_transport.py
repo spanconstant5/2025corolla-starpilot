@@ -4,7 +4,8 @@ from opendbc.can import CANPacker
 from opendbc.car.can_definitions import CanData
 from opendbc.car.toyota.tss3 import (
   ADMIN_ADDR, ADMIN_BUS, CAMRY_ORACLE_PROFILE, COROLLA_ORACLE_PROFILE, DOWNSTREAM_BUS, NATIVE_08A_ADDR, ORACLE_BUS,
-  ORACLE_MAX_PENDING_GENERATIONS, ORACLE_REQUEST_ADDR, ORACLE_RESPONSE_ADDR,
+  ORACLE_MAX_PENDING_GENERATIONS, ORACLE_PREFLIGHT_INTERVAL_NS, ORACLE_PUBLICATION_DEADLINE_NS, ORACLE_REQUEST_ADDR,
+  ORACLE_RESPONSE_ADDR,
   PANDA_REJECTED_OFFSET, PANDA_RETURNED_OFFSET, SOURCE_BUS,
   ToyotaTss3RequestTransport, build_host_application, build_oracle_transport,
 )
@@ -31,6 +32,17 @@ def request_sequence_from_sends(sends: list[CanData]) -> int:
   first = next(msg for msg in sends
                if msg.address == ORACLE_REQUEST_ADDR and msg.dat[0] == 0xC8 and (msg.dat[1] >> 5) == 0)
   return first.dat[1] & 0x1F
+
+
+def corolla_request_from_sends(sends: list[CanData]) -> tuple[int, bytes]:
+  frames = [msg for msg in sends if msg.address == ORACLE_REQUEST_ADDR]
+  assert len(frames) == 4
+  low = frames[0].dat[0] & 0x0F
+  high = frames[1].dat[0] & 0x0F
+  assert [msg.dat[0] >> 4 for msg in frames] == [8, 9, 10, 11]
+  assert frames[2].dat[0] & 0x0F == low
+  assert frames[3].dat[0] & 0x0F == high
+  return low | (high << 4), b"".join(msg.dat[1:] for msg in frames)
 
 
 class TestToyotaTss3RequestTransport(unittest.TestCase):
@@ -132,6 +144,106 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.assertEqual(diagnostics["publications_sent"], 1)
     self.assertEqual(diagnostics["max_pending_requests"], 1)
     self.assertEqual(diagnostics["last_response_latency_ms"], 8.0)
+
+  def test_corolla_preflight_proves_signer_without_publishing(self):
+    transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)
+    transport.observe([], True)
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=20.0,
+      long_active=True,
+      accel=1.5,
+      set_speed_kph=70.0,
+      now_nanos=1_000_000_000,
+    )
+    sequence, application = corolla_request_from_sends(sends)
+    self.assertFalse(transport.signer_ready())
+    self.assertEqual(application[8:10], bytes(2))
+    self.assertEqual(application[11:13], bytes(2))
+    self.assertEqual(application[18:23], bytes.fromhex("0000c00010"))
+    self.assertFalse(any(msg.address == ADMIN_ADDR and msg.dat[0] == 7 for msg in sends))
+    self.assertFalse(any(msg.address == NATIVE_08A_ADDR for msg in sends))
+
+    response_data = bytes((0xC9, sequence, 0, sequence ^ 0xFF)) + KNOWN_TRAILER
+    transport.observe(packets(1_008_000_000, CanData(ORACLE_RESPONSE_ADDR, response_data, 0)), True)
+    self.assertTrue(transport.signer_ready())
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_010_000_000,
+    )
+    self.assertEqual(sends, [])
+    diagnostics = transport.diagnostic_snapshot()
+    self.assertEqual(diagnostics["preflight_requests"], 1)
+    self.assertEqual(diagnostics["preflight_responses"], 1)
+    self.assertEqual(diagnostics["publications_sent"], 0)
+
+  def test_corolla_preflight_requires_bus_zero_and_times_out(self):
+    transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)
+    transport.observe([], True)
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000,
+    )
+    sequence, _ = corolla_request_from_sends(sends)
+    response_data = bytes((0xC9, sequence, 0, sequence ^ 0xFF)) + KNOWN_TRAILER
+    transport.observe(packets(1_008_000_000, CanData(ORACLE_RESPONSE_ADDR, response_data, 1)), True)
+    self.assertFalse(transport.signer_ready())
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000 + ORACLE_PUBLICATION_DEADLINE_NS + 1,
+    )
+    self.assertEqual(sends, [])
+    self.assertFalse(transport.signer_ready())
+    self.assertEqual(transport.diagnostic_snapshot()["preflight_timeouts"], 1)
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000 + ORACLE_PREFLIGHT_INTERVAL_NS,
+    )
+    self.assertEqual(len([msg for msg in sends if msg.address == ORACLE_REQUEST_ADDR]), 4)
+
+  def test_can_invalid_clears_preflight_readiness(self):
+    transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)
+    transport.observe([], True)
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000,
+    )
+    sequence, _ = corolla_request_from_sends(sends)
+    response_data = bytes((0xC9, sequence, 0, sequence ^ 0xFF)) + KNOWN_TRAILER
+    transport.observe(packets(1_008_000_000, CanData(ORACLE_RESPONSE_ADDR, response_data, 0)), True)
+    self.assertTrue(transport.signer_ready())
+
+    transport.observe([], False)
+    self.assertFalse(transport.signer_ready())
 
   def test_camry_transport_profile_remains_the_default(self):
     self.assertEqual(build_oracle_transport(1, KNOWN_APPLICATION),
