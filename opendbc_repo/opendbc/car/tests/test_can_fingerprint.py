@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 from opendbc.car.can_definitions import CanData
-from opendbc.car.car_helpers import FRAME_FINGERPRINT, _apply_starpilot_access_policy, _get_gm_stored_candidate_fallback, _normalize_gm_suburban_camera_candidate, can_fingerprint
+from opendbc.car.car_helpers import (FRAME_FINGERPRINT, _apply_starpilot_access_policy, _get_gm_stored_candidate_fallback,
+                                     _get_toyota_tss3_census_candidate, _normalize_gm_suburban_camera_candidate, can_fingerprint)
+from opendbc.car.toyota.tss3_census import COROLLA_TSS3_ADAS_CENSUS, COROLLA_TSS3_CAN_CENSUS, matches_corolla_tss3_recovery_census
 from opendbc.car.fingerprints import _FINGERPRINTS as FINGERPRINTS
 from opendbc.car.gm.values import CAR as GM
 from opendbc.car.toyota.values import CAR as TOYOTA
@@ -111,6 +113,39 @@ class TestCanFingerprint:
     candidate = _get_gm_stored_candidate_fallback(fingerprints, "CHEVROLET_VOLT_CC", "CHEVROLET_VOLT_CC")
 
     assert candidate is None
+
+  @staticmethod
+  def _corolla_tss3_recovery_fingerprint():
+    return {
+      0: dict(COROLLA_TSS3_CAN_CENSUS),
+      1: dict(COROLLA_TSS3_ADAS_CENSUS),
+      2: dict(COROLLA_TSS3_CAN_CENSUS),
+    }
+
+  def test_corolla_tss3_recovery_requires_complete_three_bus_topology(self):
+    fingerprints = self._corolla_tss3_recovery_fingerprint()
+
+    assert matches_corolla_tss3_recovery_census(fingerprints)
+    assert _get_toyota_tss3_census_candidate(fingerprints, TOYOTA.TOYOTA_COROLLA_TSS3) == TOYOTA.TOYOTA_COROLLA_TSS3
+    assert _get_toyota_tss3_census_candidate(fingerprints, "MOCK") is None
+
+  def test_corolla_tss3_recovery_rejects_missing_mirrored_plane(self):
+    fingerprints = self._corolla_tss3_recovery_fingerprint()
+    fingerprints[2] = {}
+
+    assert not matches_corolla_tss3_recovery_census(fingerprints)
+
+  def test_corolla_tss3_recovery_rejects_wrong_vehicle_dlc(self):
+    fingerprints = self._corolla_tss3_recovery_fingerprint()
+    fingerprints[0][0x08A] = 8
+
+    assert not matches_corolla_tss3_recovery_census(fingerprints)
+
+  def test_corolla_tss3_recovery_rejects_incomplete_adas_plane(self):
+    fingerprints = self._corolla_tss3_recovery_fingerprint()
+    del fingerprints[1][0x160]
+
+    assert not matches_corolla_tss3_recovery_census(fingerprints)
 
   def test_starpilot_access_policy_ignores_stale_block_user_toggle(self):
     candidate = _apply_starpilot_access_policy("CHEVROLET_VOLT_CC", SimpleNamespace(block_user=True))

@@ -12,7 +12,8 @@ from opendbc.car.fingerprints import eliminate_incompatible_cars, all_legacy_fin
 from opendbc.car.fw_versions import ObdCallback, get_fw_versions_ordered, get_present_ecus, match_fw_to_car
 from opendbc.car.hyundai.values import kia_ray_ev_vin
 from opendbc.car.mock.values import CAR as MOCK
-from opendbc.car.toyota.values import ToyotaSafetyFlags
+from opendbc.car.toyota.tss3_census import matches_corolla_tss3_recovery_census
+from opendbc.car.toyota.values import CAR as TOYOTA, ToyotaSafetyFlags
 from opendbc.car.values import BRANDS
 from opendbc.car.vin import get_vin, is_valid_vin, VIN_UNKNOWN
 from openpilot.common.params import Params
@@ -204,6 +205,12 @@ def _get_gm_stored_candidate_fallback(fingerprints: dict[int, dict], stored_cand
   return None
 
 
+def _get_toyota_tss3_census_candidate(fingerprints: dict[int, dict], stored_candidate: str | None) -> str | None:
+  if stored_candidate == TOYOTA.TOYOTA_COROLLA_TSS3 and matches_corolla_tss3_recovery_census(fingerprints):
+    return str(TOYOTA.TOYOTA_COROLLA_TSS3)
+  return None
+
+
 def _apply_starpilot_access_policy(candidate: str, starpilot_toggles: SimpleNamespace | None) -> str:
   # Branch-based dashcam gating was removed. Keep the resolved candidate even if
   # an older serialized toggle payload still contains block_user=True.
@@ -353,6 +360,18 @@ def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multip
         "cached_candidate": cached_candidate,
       })
       candidate = gm_fallback_candidate
+
+  toyota_tss3_candidate = _get_toyota_tss3_census_candidate(fingerprints, stored_candidate) if candidate is None else None
+  if toyota_tss3_candidate is not None:
+    candidate = toyota_tss3_candidate
+    source = CarParams.FingerprintSource.can
+    exact_match = True
+    carlog.error({
+      "event": "recovered Corolla TSS3 from mirrored live census",
+      "candidate": candidate,
+      "stored_candidate": stored_candidate,
+      "cached_candidate": cached_candidate,
+    })
 
   if candidate is None or starpilot_toggles.force_fingerprint:
     if starpilot_toggles.force_fingerprint:

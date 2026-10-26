@@ -13,6 +13,7 @@ authority for the 2025 control messages.
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
+| Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
 | Longitudinal control | Disabled | Interface, controller, and Panda safety all keep both acceleration fields zero. IDs and limits are not yet accepted as Corolla-live evidence. |
 
@@ -62,7 +63,10 @@ frame. The report also lists which bytes changed in native candidate frames.
 1. Install the volatile signer from OFF using the guided UI startup catcher.
    Do not move the car until the live signer probe has passed and the vehicle
    has returned to READY without affirmative Brake/EPS fault bits.
-2. While stationary in Park, engage and disengage once. Require a
+2. With the service brake firmly held, select Drive, release the parking brake,
+   close all doors, enable cruise main, and engage/disengage once without allowing
+   the car to move. Park is not an engageable gear and cannot exercise the normal
+   request plane. Require a
    `signer_response_live` record, a `host_08a_active` record, accepted
    publications, zero rejected publications, and zero nonzero longitudinal
    fields.

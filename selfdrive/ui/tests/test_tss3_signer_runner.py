@@ -158,6 +158,56 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
   assert summary["ui_status"]["done"] is True
 
 
+def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
+  class FakeParams:
+    def __init__(self):
+      self.values = {}
+
+    def put(self, key, value):
+      self.values[key] = value
+
+  run_dir = tmp_path / "run"
+  run_dir.mkdir()
+  (run_dir / "request-signer-install.json").write_text(json.dumps({
+    "schema": runner.INSTALL_SCHEMA,
+    "verdict": runner.INSTALL_PASS_VERDICT,
+  }), encoding="utf-8")
+  params = FakeParams()
+  signer_runner = runner.Tss3SignerRunner(start=False, params=params)
+  signer_runner._run_dir = run_dir
+  signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
+
+  signer_runner._reader()
+
+  assert params.values["CarMake"] == "Toyota"
+  assert params.values["CarModel"] == runner.COROLLA_TSS3_MODEL
+
+
+def test_failed_signer_probe_does_not_persist_corolla_identity(tmp_path: Path):
+  class FakeParams:
+    def __init__(self):
+      self.values = {}
+
+    def put(self, key, value):
+      self.values[key] = value
+
+  (tmp_path / "request-signer-install.json").write_text(json.dumps({
+    "schema": runner.INSTALL_SCHEMA,
+    "verdict": "request_signer_live_probe_failed",
+  }), encoding="utf-8")
+  params = FakeParams()
+  signer_runner = runner.Tss3SignerRunner(start=False, params=params)
+  signer_runner._run_dir = tmp_path
+  signer_runner._proc = SimpleNamespace(
+    stdout=io.StringIO(json.dumps(status_row(stage="error", done=False, error=True)) + "\n"),
+    wait=lambda: 1,
+  )
+
+  signer_runner._reader()
+
+  assert params.values == {}
+
+
 def test_failed_or_missing_install_is_not_reclassified(tmp_path: Path):
   failure = status_row(stage="error", done=False, error=True)
   assert runner.preserve_install_result(tmp_path, failure) == failure

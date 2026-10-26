@@ -1,13 +1,17 @@
 """Non-identifying CAN census from user-supplied 2025 Corolla rlogs.
 
 This is evidence for parser coverage. It is deliberately not registered in
-FINGERPRINTS because the observed Corolla set can overlap a TSS3 Camry census.
+FINGERPRINTS because a single observed Corolla plane can overlap a TSS3 Camry
+census. Recovery below therefore requires the mirrored vehicle planes and the
+complete observed CAN-FD ADAS plane together.
 """
 
 COROLLA_TSS3_CENSUS_SOURCES = {
   "segment_0_zst_sha256": "7d51da944ee0bdcedbd5a7ecf72c3a9908b8bc8634cfe6e23638c447cb41b4c7",
   "segment_10_raw_sha256": "98710e8d23a40796718b7be566efc83a569be90ece59b5d7f70377143e38338b",
   "segment_10_evidence_zst_sha256": "f1ae7c40ad8e9ff8c462a3f5367d914873e93575d902ccb82f2c74984acd439f",
+  "post_firmware_stationary_rlog_sha256": "cda564be920fbacef233e2759a914530853c9ddb70609fb655b7e863855dc0f4",
+  "post_firmware_stationary_mock_fallback_rlog_sha256": "ad241e8ceb11972a9ff3a6252d71ab13133faf1651c11c19a88e52c5c1ef5ee7",
 }
 
 COROLLA_TSS3_CAN_CENSUS = {
@@ -164,3 +168,48 @@ COROLLA_TSS3_CAN_CENSUS = {
   0x7CC: 8,
   0x7D8: 8,
 }
+
+# The ADAS plane is stable across every retained 2025 Corolla route. The caller
+# must additionally require explicit identity authority (a stored Corolla
+# selection or a successful exact EPS signer probe); topology alone is not an
+# identity claim because one vehicle plane can overlap a TSS3 Camry.
+COROLLA_TSS3_ADAS_CENSUS = {
+  0x020: 12,
+  0x123: 16,
+  0x160: 32,
+  0x180: 64,
+  0x181: 64,
+  0x182: 64,
+  0x183: 64,
+  0x184: 64,
+  0x185: 64,
+  0x186: 64,
+  0x187: 64,
+  0x188: 64,
+  0x189: 64,
+  0x18A: 64,
+  0x18B: 64,
+  0x18C: 48,
+  0x1A0: 48,
+  0x200: 64,
+  0x201: 64,
+  0x230: 64,
+  0x440: 32,
+  0x450: 32,
+}
+
+COROLLA_TSS3_MIN_VEHICLE_CENSUS_MATCHES = 120
+
+
+def matches_corolla_tss3_recovery_census(fingerprints: dict[int, dict[int, int]]) -> bool:
+  """Match only the proven three-bus Corolla topology after FPv1 is ambiguous."""
+  for bus in (0, 2):
+    observed = fingerprints.get(bus, {})
+    matching = sum(observed.get(address) == length for address, length in COROLLA_TSS3_CAN_CENSUS.items())
+    wrong_dlc = any(address in observed and observed[address] != length
+                    for address, length in COROLLA_TSS3_CAN_CENSUS.items())
+    if matching < COROLLA_TSS3_MIN_VEHICLE_CENSUS_MATCHES or wrong_dlc:
+      return False
+
+  adas = fingerprints.get(1, {})
+  return all(adas.get(address) == length for address, length in COROLLA_TSS3_ADAS_CENSUS.items())

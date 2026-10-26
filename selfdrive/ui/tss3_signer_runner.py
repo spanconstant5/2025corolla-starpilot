@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.toyota_tss3_request_signer import request_signer_kit_compatibility
 
 
@@ -19,6 +20,7 @@ INSTALL_SCHEMA = "tss3-request-signer-install-v1"
 INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
 OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v1"
 OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
+COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
 
 STAGE_LABELS = {
   "arming": "starting",
@@ -120,6 +122,15 @@ def _load_json_object(path: Path) -> dict[str, Any] | None:
   return value if isinstance(value, dict) else None
 
 
+def signer_install_proven(run_dir: Path | None) -> bool:
+  if run_dir is None:
+    return False
+  install = _load_json_object(run_dir / "request-signer-install.json")
+  return bool(install is not None and
+              install.get("schema") == INSTALL_SCHEMA and
+              install.get("verdict") == INSTALL_PASS_VERDICT)
+
+
 def classify_control_domain_state(control_state: dict[str, Any] | None) -> dict[str, str]:
   """Classify only fault evidence that the saved result actually establishes.
 
@@ -162,12 +173,9 @@ def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any]) -> No
   if run_dir is None:
     return
   control_state = _load_json_object(run_dir / "control-domain-state.json")
-  install = _load_json_object(run_dir / "request-signer-install.json")
   summary = {
     "schema": OPENPILOT_SUMMARY_SCHEMA,
-    "signer_installed": bool(install is not None and
-                             install.get("schema") == INSTALL_SCHEMA and
-                             install.get("verdict") == INSTALL_PASS_VERDICT),
+    "signer_installed": signer_install_proven(run_dir),
     "vehicle_health": classify_control_domain_state(control_state),
     "ui_status": status,
   }
@@ -219,9 +227,11 @@ def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dic
 class Tss3SignerRunner:
   """Own one guided NRTD-to-READY request-signer bringup process."""
 
-  def __init__(self, tool_path: Path = DEFAULT_TOOL_PATH, run_root: Path = DEFAULT_RUN_ROOT, *, start: bool = True):
+  def __init__(self, tool_path: Path = DEFAULT_TOOL_PATH, run_root: Path = DEFAULT_RUN_ROOT, *, start: bool = True,
+               params: Params | None = None):
     self._tool_path = tool_path
     self._run_root = run_root
+    self._params = params if params is not None else Params()
     self._lock = threading.Lock()
     self._status: dict[str, Any] = {
       "stage": "arming",
@@ -319,4 +329,10 @@ class Tss3SignerRunner:
 
     status = preserve_install_result(self._run_dir, report.finish(self._proc.wait()))
     _write_openpilot_summary(self._run_dir, status)
+    if signer_install_proven(self._run_dir):
+      # The exact EPS live probe is stronger identity evidence than the
+      # overlapping TSS3 vehicle census. Store the validated model so a later
+      # ambiguous FPv1 run can recover it only when the live census also fits.
+      self._params.put("CarMake", "Toyota")
+      self._params.put("CarModel", COROLLA_TSS3_MODEL)
     self._set_status(status)
