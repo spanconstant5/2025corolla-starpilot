@@ -20,7 +20,7 @@ CANCEL_FILENAME = "cancel-requested"
 STATUS_SCHEMA = "tss3-request-signer-ui-status-v1"
 INSTALL_SCHEMA = "tss3-request-signer-install-v1"
 INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
-OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v1"
+OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v2"
 OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
 
 STAGE_LABELS = {
@@ -170,12 +170,29 @@ def classify_control_domain_state(control_state: dict[str, Any] | None) -> dict[
   return {"state": "inconclusive", "reason": "peer_monitor_unavailable"}
 
 
-def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any]) -> None:
+def _param_text(params: Params, key: str) -> str:
+  value = params.get(key, encoding="utf-8")
+  return value if isinstance(value, str) else ""
+
+
+def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any], params: Params,
+                             startup_bridge_requested: bool) -> None:
   if run_dir is None:
     return
   control_state = _load_json_object(run_dir / "control-domain-state.json")
   summary = {
     "schema": OPENPILOT_SUMMARY_SCHEMA,
+    "openpilot": {
+      "version": _param_text(params, "Version"),
+      "git_commit": _param_text(params, "GitCommit"),
+      "git_branch": _param_text(params, "GitBranch"),
+      "git_remote": _param_text(params, "GitRemote"),
+      "dirty": bool(_param_text(params, "GitDiff")),
+    },
+    "startup_bridge": {
+      "supported": True,
+      "requested": startup_bridge_requested,
+    },
     "signer_installed": signer_install_proven(run_dir),
     "vehicle_health": classify_control_domain_state(control_state),
     "ui_status": status,
@@ -244,6 +261,7 @@ class Tss3SignerRunner:
     }
     self._proc: subprocess.Popen[str] | None = None
     self._run_dir: Path | None = None
+    self._startup_bridge_requested = False
     if start:
       self.start()
 
@@ -279,6 +297,7 @@ class Tss3SignerRunner:
     # and messaging subscriptions can finish while the operator waits to power
     # the car, eliminating the post-probe startup gap that expires the signer.
     self._params.put_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
+    self._startup_bridge_requested = True
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     self._run_dir = self._run_root / f"ui-bringup-{stamp}-{os.getpid()}-{time.monotonic_ns()}"
     cmd = [str(self._tool_path), "ui-bringup", str(self._run_dir)]
@@ -334,7 +353,7 @@ class Tss3SignerRunner:
         self._set_status(status)
 
     status = preserve_install_result(self._run_dir, report.finish(self._proc.wait()))
-    _write_openpilot_summary(self._run_dir, status)
+    _write_openpilot_summary(self._run_dir, status, self._params, self._startup_bridge_requested)
     if signer_install_proven(self._run_dir):
       # The exact EPS live probe is stronger identity evidence than the
       # overlapping TSS3 vehicle census. Store the validated model so a later

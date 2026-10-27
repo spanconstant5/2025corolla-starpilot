@@ -12,7 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Prewarmed handoff implemented, route validation pending | Clean routes at `23560df817` proved the tuple/retry fixes: 596 accepted `0x777` frames, zero rejections, sequence mismatches, or nonzero longitudinal fields. They also isolated the remaining delay to `card` startup after the installer released Panda. The guided flow now prewarms `card` offroad and keeps it alive through valid on-road Corolla CAN, so its send subscription is already waiting when the cooperative Panda lease ends. |
+| Runtime signer preflight | Prewarmed handoff implemented, deployment validation pending | Clean routes at `23560df817` proved the tuple/retry fixes: accepted `0x777` frames had zero rejections, sequence mismatches, or nonzero longitudinal fields. They also isolated the remaining delay to `card` startup after the installer released Panda. The guided flow now prewarms `card` offroad and keeps it alive through valid on-road Corolla CAN, but the first post-change upload was still running `23560df817`, not the prewarm commit. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -125,6 +125,25 @@ then releases the bridge; the ordinary `ControlsReady` path remains solely
 responsible for selecting Toyota safety. This does not require NRTD, does not
 share direct Panda ownership, and does not relax fingerprint, signer, safety,
 or longitudinal gates.
+
+The October 27 installer again passed the exact live signer probe on its first
+attempt in 10.31 ms, with four accepted frames and zero rejects. Its following
+61.692-second route was stationary in Park and recovered
+`TOYOTA_COROLLA_TSS3`; Panda transitioned from ELM327 to Toyota safety param
+53321 with no faults. It accepted 312 `0x777` fragments with zero rejects, and
+all 75 complete logged applications had aligned carrier/application sequences
+and zero in both longitudinal fields. There was no `0x7A9` response or host
+`0x08A`. The first accepted runtime fragment arrived 1.115 s after the installer
+completed, and the route recorded three startup `controlsMismatch` samples.
+Most importantly, `initData` proves this run was still clean commit
+`23560df8176e251b9009e47a957aa99e58f78d21`, so it did not exercise the
+prewarmed-card change at `e08f46fe6a89f016054011a5dbcd85a4413a55fb`.
+
+Starting with `tss3-openpilot-bringup-summary-v2`, every guided UI archive
+records the active openpilot version, commit, branch, remote, dirty state, and
+whether this build actually requested the startup bridge. This makes deployment
+provenance available in the small installer archive instead of requiring a
+later qlog/rlog to discover that the wrong tree was installed.
 
 Run the offline report with:
 

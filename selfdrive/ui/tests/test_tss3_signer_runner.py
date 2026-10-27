@@ -30,6 +30,12 @@ class MemoryParams:
   def put_bool(self, key, value):
     self.values[key] = bool(value)
 
+  def get(self, key, encoding=None):
+    value = self.values.get(key)
+    if encoding is not None and isinstance(value, bytes):
+      return value.decode(encoding)
+    return value
+
   def remove(self, key):
     self.values.pop(key, None)
 
@@ -160,7 +166,14 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
     "verdict": runner.INSTALL_PASS_VERDICT,
   }), encoding="utf-8")
 
-  signer_runner = runner.Tss3SignerRunner(start=False, params=MemoryParams())
+  params = MemoryParams()
+  params.put("Version", "0.11.2")
+  params.put("GitCommit", "e08f46fe6a89f016054011a5dbcd85a4413a55fb")
+  params.put("GitBranch", "star2025")
+  params.put("GitRemote", "https://github.com/spanconstant5/openpilot.git")
+  params.put("GitDiff", "")
+  signer_runner = runner.Tss3SignerRunner(start=False, params=params)
+  signer_runner._startup_bridge_requested = True
   signer_runner._run_dir = run_dir
   signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
   signer_runner._reader()
@@ -170,6 +183,14 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
   assert summary["signer_installed"] is True
   assert summary["vehicle_health"]["state"] == "inconclusive"
   assert summary["ui_status"]["done"] is True
+  assert summary["openpilot"] == {
+    "version": "0.11.2",
+    "git_commit": "e08f46fe6a89f016054011a5dbcd85a4413a55fb",
+    "git_branch": "star2025",
+    "git_remote": "https://github.com/spanconstant5/openpilot.git",
+    "dirty": False,
+  }
+  assert summary["startup_bridge"] == {"supported": True, "requested": True}
 
 
 def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
