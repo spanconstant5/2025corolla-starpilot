@@ -36,8 +36,16 @@ class MemoryParams:
       return value.decode(encoding)
     return value
 
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
+
   def remove(self, key):
     self.values.pop(key, None)
+
+
+def use_temporary_bridge_paths(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH", tmp_path / "bridge-request")
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH", tmp_path / "bridge-ready")
 
 
 def test_completion_requires_done_status_and_clean_exit():
@@ -174,6 +182,7 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
   params.put("GitDiff", "")
   signer_runner = runner.Tss3SignerRunner(start=False, params=params)
   signer_runner._startup_bridge_requested = True
+  signer_runner._startup_bridge_acknowledged = True
   signer_runner._run_dir = run_dir
   signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
   signer_runner._reader()
@@ -190,7 +199,7 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
     "git_remote": "https://github.com/spanconstant5/openpilot.git",
     "dirty": False,
   }
-  assert summary["startup_bridge"] == {"supported": True, "requested": True}
+  assert summary["startup_bridge"] == {"supported": True, "requested": True, "acknowledged": True}
 
 
 def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
@@ -245,6 +254,7 @@ def test_failed_or_missing_install_is_not_reclassified(tmp_path: Path):
 
 def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
   commands = []
+  use_temporary_bridge_paths(tmp_path, monkeypatch)
 
   class FakeProcess:
     stdout = io.StringIO()
@@ -258,11 +268,14 @@ def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
       return 0
 
   class FakeThread:
-    def __init__(self, *args, **kwargs):
-      pass
+    def __init__(self, target, args=(), name=None, **_kwargs):
+      self.target = target
+      self.args = args
+      self.name = name
 
     def start(self):
-      pass
+      if self.name == "tss3_signer_bridge":
+        self.target(*self.args)
 
   def fake_popen(command, **kwargs):
     commands.append((command, kwargs))
@@ -271,6 +284,7 @@ def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
   monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
   monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
   monkeypatch.setattr(runner.threading, "Thread", FakeThread)
+  monkeypatch.setattr(runner, "_wait_for_startup_bridge", lambda *_args, **_kwargs: True)
 
   tool = tmp_path / "tss3-request-signer"
   params = MemoryParams()
@@ -282,14 +296,66 @@ def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
 
 
 def test_runner_releases_startup_bridge_when_tool_cannot_launch(tmp_path: Path, monkeypatch):
+  use_temporary_bridge_paths(tmp_path, monkeypatch)
+
   def fail_popen(*_args, **_kwargs):
     raise OSError("missing")
 
   monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
   monkeypatch.setattr(runner.subprocess, "Popen", fail_popen)
+  monkeypatch.setattr(runner, "_wait_for_startup_bridge", lambda *_args, **_kwargs: True)
+
+  class ImmediateThread:
+    def __init__(self, target, args=(), **_kwargs):
+      self.target = target
+      self.args = args
+
+    def start(self):
+      self.target(*self.args)
+
+  monkeypatch.setattr(runner.threading, "Thread", ImmediateThread)
 
   params = MemoryParams()
   signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=params)
 
   assert runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM not in params.values
   assert signer_runner.snapshot()["error"] is True
+
+
+def test_runner_does_not_launch_tool_without_socket_bridge_ack(tmp_path: Path, monkeypatch):
+  commands = []
+  use_temporary_bridge_paths(tmp_path, monkeypatch)
+  monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
+  monkeypatch.setattr(runner, "_wait_for_startup_bridge", lambda *_args, **_kwargs: False)
+  monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: commands.append((args, kwargs)))
+
+  class ImmediateThread:
+    def __init__(self, target, args=(), **_kwargs):
+      self.target = target
+      self.args = args
+
+    def start(self):
+      self.target(*self.args)
+
+  monkeypatch.setattr(runner.threading, "Thread", ImmediateThread)
+
+  params = MemoryParams()
+  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=params)
+
+  assert commands == []
+  assert runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM not in params.values
+  assert signer_runner.snapshot()["error"] is True
+
+
+def test_runner_contains_bridge_param_failure_in_ui(tmp_path: Path, monkeypatch):
+  use_temporary_bridge_paths(tmp_path, monkeypatch)
+  monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
+
+  class BrokenParams(MemoryParams):
+    def put_bool(self, key, value):
+      raise RuntimeError(f"cannot write {key}={value}")
+
+  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=BrokenParams())
+
+  assert signer_runner.snapshot()["error"] is True
+  assert not runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()

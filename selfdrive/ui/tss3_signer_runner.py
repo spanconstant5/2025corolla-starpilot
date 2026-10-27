@@ -10,7 +10,11 @@ from typing import Any
 
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.toyota_tss3_request_signer import (
-  COROLLA_TSS3_MODEL, TSS3_SIGNER_STARTUP_BRIDGE_PARAM, request_signer_kit_compatibility,
+  COROLLA_TSS3_MODEL,
+  TSS3_SIGNER_STARTUP_BRIDGE_PARAM,
+  TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH,
+  TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH,
+  request_signer_kit_compatibility,
 )
 
 
@@ -22,6 +26,7 @@ INSTALL_SCHEMA = "tss3-request-signer-install-v1"
 INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
 OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v2"
 OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
+STARTUP_BRIDGE_READY_TIMEOUT_S = 4.0
 
 STAGE_LABELS = {
   "arming": "starting",
@@ -175,8 +180,32 @@ def _param_text(params: Params, key: str) -> str:
   return value if isinstance(value, str) else ""
 
 
+def _read_bridge_token(path: Path) -> str | None:
+  try:
+    token = path.read_text(encoding="utf-8").strip()
+    return token or None
+  except OSError:
+    return None
+
+
+def _cleanup_bridge_files(token: str) -> None:
+  for path in (TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH, TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH):
+    if _read_bridge_token(path) == token:
+      path.unlink(missing_ok=True)
+
+
+def _wait_for_startup_bridge(token: str, cancelled: threading.Event,
+                             timeout: float = STARTUP_BRIDGE_READY_TIMEOUT_S) -> bool:
+  deadline = time.monotonic() + timeout
+  while not cancelled.is_set() and time.monotonic() < deadline:
+    if _read_bridge_token(TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH) == token:
+      return True
+    time.sleep(0.02)
+  return False
+
+
 def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any], params: Params,
-                             startup_bridge_requested: bool) -> None:
+                             startup_bridge_requested: bool, startup_bridge_acknowledged: bool) -> None:
   if run_dir is None:
     return
   control_state = _load_json_object(run_dir / "control-domain-state.json")
@@ -192,6 +221,7 @@ def _write_openpilot_summary(run_dir: Path | None, status: dict[str, Any], param
     "startup_bridge": {
       "supported": True,
       "requested": startup_bridge_requested,
+      "acknowledged": startup_bridge_acknowledged,
     },
     "signer_installed": signer_install_proven(run_dir),
     "vehicle_health": classify_control_domain_state(control_state),
@@ -262,6 +292,9 @@ class Tss3SignerRunner:
     self._proc: subprocess.Popen[str] | None = None
     self._run_dir: Path | None = None
     self._startup_bridge_requested = False
+    self._startup_bridge_acknowledged = False
+    self._launch_pending = False
+    self._cancelled = threading.Event()
     if start:
       self.start()
 
@@ -278,7 +311,7 @@ class Tss3SignerRunner:
       self._status = dict(status)
 
   def start(self) -> None:
-    if self._proc is not None or self._run_dir is not None:
+    if self._proc is not None or self._run_dir is not None or self._launch_pending:
       raise RuntimeError("TSS3 signer runner already started")
 
     check = request_signer_kit_compatibility(self._tool_path)
@@ -293,11 +326,63 @@ class Tss3SignerRunner:
       })
       return
 
-    # Start card offroad before the installer claims Panda. Its Python imports
-    # and messaging subscriptions can finish while the operator waits to power
-    # the car, eliminating the post-probe startup gap that expires the signer.
-    self._params.put_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
+    token = f"{os.getpid()}-{time.monotonic_ns()}"
+    try:
+      TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH.unlink(missing_ok=True)
+      temporary = TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.with_name(
+        f".{TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.name}.{os.getpid()}",
+      )
+      temporary.write_text(token + "\n", encoding="utf-8")
+      os.replace(temporary, TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH)
+      self._params.put_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
+    except Exception as exc:
+      _cleanup_bridge_files(token)
+      try:
+        self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      except Exception:
+        pass
+      self._set_status({
+        "stage": "error",
+        "title": "Could not prepare Corolla signer handoff",
+        "detail": f"{type(exc).__name__}: {exc}",
+        "progress": 0,
+        "done": False,
+        "error": True,
+      })
+      return
+
     self._startup_bridge_requested = True
+    self._launch_pending = True
+    threading.Thread(
+      target=self._launch_after_bridge_ready,
+      args=(token,),
+      name="tss3_signer_bridge",
+      daemon=True,
+    ).start()
+
+  def _launch_after_bridge_ready(self, token: str) -> None:
+    if not _wait_for_startup_bridge(token, self._cancelled):
+      self._launch_pending = False
+      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      _cleanup_bridge_files(token)
+      if not self._cancelled.is_set():
+        self._set_status({
+          "stage": "error",
+          "title": "Corolla signer handoff did not become ready",
+          "detail": "The lightweight card socket bridge did not acknowledge startup. The installer was not launched.",
+          "progress": 0,
+          "done": False,
+          "error": True,
+        })
+      return
+
+    _cleanup_bridge_files(token)
+    self._startup_bridge_acknowledged = True
+    self._launch_pending = False
+    if self._cancelled.is_set():
+      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      return
+
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     self._run_dir = self._run_root / f"ui-bringup-{stamp}-{os.getpid()}-{time.monotonic_ns()}"
     cmd = [str(self._tool_path), "ui-bringup", str(self._run_dir)]
@@ -329,6 +414,9 @@ class Tss3SignerRunner:
     threading.Thread(target=self._reader, name="tss3_signer_ui", daemon=True).start()
 
   def request_cancel(self) -> None:
+    self._cancelled.set()
+    if self._launch_pending:
+      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
     status = self.snapshot()
     proc = self._proc
     if proc is not None and proc.poll() is None and not status.get("done") and not status.get("error") and self._run_dir is not None:
@@ -353,7 +441,9 @@ class Tss3SignerRunner:
         self._set_status(status)
 
     status = preserve_install_result(self._run_dir, report.finish(self._proc.wait()))
-    _write_openpilot_summary(self._run_dir, status, self._params, self._startup_bridge_requested)
+    _write_openpilot_summary(
+      self._run_dir, status, self._params, self._startup_bridge_requested, self._startup_bridge_acknowledged,
+    )
     if signer_install_proven(self._run_dir):
       # The exact EPS live probe is stronger identity evidence than the
       # overlapping TSS3 vehicle census. Store the validated model so a later

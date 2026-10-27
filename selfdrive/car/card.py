@@ -102,10 +102,12 @@ class Car:
 
   FPCP: custom.StarPilotCarParams
 
-  def __init__(self, CI=None, RI=None) -> None:
-    self.can_sock = messaging.sub_sock('can', timeout=20)
+  def __init__(self, CI=None, RI=None, can_sock=None, pm=None) -> None:
+    self.can_sock = can_sock if can_sock is not None else messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'radarState', 'longitudinalPlan'])
-    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks', 'starpilotCarControl'])
+    self.pm = pm if pm is not None else messaging.PubMaster(
+      ['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks', 'starpilotCarControl'],
+    )
     self.gps_pm = None
 
     self.can_rcv_cum_timeout_counter = 0

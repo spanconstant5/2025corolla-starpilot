@@ -21,6 +21,8 @@ EXPECTED_PAYLOAD_SHA256 = "72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfe
 PASS_VERDICT = "request_signer_live_probe_pass"
 COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
 TSS3_SIGNER_STARTUP_BRIDGE_PARAM = "Tss3SignerStartupBridge"
+TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH = Path("/tmp/openpilot-tss3-card-bridge-request")
+TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH = Path("/tmp/openpilot-tss3-card-bridge-ready")
 
 
 def tss3_startup_bridge_release_ready(car_fingerprint: str, can_valid: bool, onroad: bool) -> bool:

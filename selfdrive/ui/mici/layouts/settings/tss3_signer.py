@@ -42,7 +42,7 @@ def can_install_corolla_signer() -> bool:
 
 
 class CorollaSignerBringupPage(NavScroller):
-  """Comma 4 page for the NRTD-to-READY EPS startup race and RAM install."""
+  """Comma 4 page for the OFF-to-READY EPS startup race and RAM install."""
 
   def __init__(self):
     super().__init__()

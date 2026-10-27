@@ -64,6 +64,10 @@ def test_card_prewarms_for_tss3_signer_handoff(started, bridge_active, expected)
   assert card_run(started, params, car.CarParams.new_message(), SimpleNamespace()) is expected
 
 
+def test_card_uses_lightweight_launcher_for_offroad_handoff():
+  assert managed_processes["card"].module == "selfdrive.car.card_launcher"
+
+
 def test_mapd_runs_onroad_or_during_offroad_map_transfer(monkeypatch):
   class MemoryParams:
     values = {}
