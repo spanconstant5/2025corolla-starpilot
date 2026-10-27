@@ -77,16 +77,17 @@ malformed or stale lease is removed, while an unrequested native-child exit
 continues through StarPilot's existing recovery path. The rest of openpilot
 and its manager remain running throughout the handoff.
 
-The EPS resident is volatile and the normal VIN/firmware plus controls startup
-delay exceeded its observed post-install lifetime. When `CarModel` already
-selects this exact Corolla, fingerprinting therefore skips the unproductive
-firmware query and still requires the complete live three-bus recovery census.
-After that census creates the interface, `card` sends the installer-proven
-inactive `0x777` challenge during controls initialization and refreshes it once
-per second. Panda's initial ELM327 safety mode admits the eight-byte `0x777`
-carrier; the request contains no active lateral or longitudinal command. The
-normal Toyota controller inherits the same transport state when controls become
-ready, without a second request owner or direct-Panda access.
+The EPS resident is volatile and the normal startup delay exceeded its observed
+post-install lifetime even after the VIN/firmware query was removed. When
+`CarModel` already selects this exact Corolla, `card` starts the
+installer-proven inactive `0x777` challenge as soon as live CAN also shows the
+mirrored 32-byte native `0x08A` plane on buses 0 and 2. One transport maintains
+the one-second cadence through CAN-only fingerprinting and parser warmup; the
+normal Toyota interface takes over on the first valid CarState. Fingerprint
+recovery still requires the complete live three-bus census. Panda's initial
+ELM327 safety mode admits the eight-byte
+`0x777` carrier, which contains no active lateral or longitudinal command. No
+phase uses signer admin, publishes host `0x08A`, or takes direct-Panda ownership.
 
 ## Guided startup sequence
 

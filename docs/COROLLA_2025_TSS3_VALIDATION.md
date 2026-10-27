@@ -12,7 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Startup handoff fixed, route validation pending | Aligned runtime requests were accepted by Panda but began 10.296 s after the passing installer probe and received no `0x7A9`. A stored Corolla selection now skips the unproductive firmware query, and `card` sends the exact inactive challenge during controls initialization to preserve the volatile resident. |
+| Runtime signer preflight | Fingerprint handoff implemented, route validation pending | Commit `4d8c1700bf` reduced the first accepted runtime request from 10.296 s to 3.466 s after install, but that was still too late and produced no `0x7A9`. The same inactive transport now starts as soon as the live mirrored TSS3 plane is visible and spans fingerprint census plus parser warmup. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -65,14 +65,25 @@ fingerprint and another 5.4 s waiting for controls initialization. The vehicle
 also moved at up to 1.048 m/s and changed gears, so this pair is diagnostic
 evidence and not a stationary validation pass.
 
-For the next attempt, a persisted Corolla TSS3 selection bypasses VIN/firmware
-queries that have produced no usable firmware identity on this car. Identity
-is still accepted only after the complete three-bus live census matches. Once
-that match creates the Toyota interface, `card` issues the byte-exact inactive
-sequence-1 signer challenge while controls are still initializing and refreshes
-it at the normal one-second preflight cadence. This path cannot arm replacement
-ownership or publish host `0x08A`; lateral is inactive and both longitudinal
-fields remain zero.
+The next stationary route at clean commit
+`4d8c1700bfc0c57861178b143d3823c3d694b3d4` proved that the controls-startup
+bridge ran as designed but still started too late. The car remained in Park at
+zero speed. Panda accepted all 28 frames forming seven aligned applications,
+with zero rejections, zero sequence mismatches, and zero nonzero longitudinal
+fields; the EPS returned no `0x7A9`. The first request began 3.466 s after the
+successful installer probe. There were no Panda faults, invalid RX checks, TX
+blocks, `canError`, `canBusMissing`, or `controlsMismatch` events.
+
+For the next attempt, a persisted Corolla TSS3 selection still bypasses
+VIN/firmware queries that have produced no usable identity on this car, while
+final identity still requires the complete three-bus live census. The inactive
+transport now starts after `card` observes the mirrored 32-byte native `0x08A`
+plane on buses 0 and 2, continues through the fingerprint census, and remains
+the sole startup sender while the Corolla parsers warm up. On the first valid
+CarState, the normal Toyota interface takes over preflight. Every phase uses the same
+byte-exact inactive application and one-second refresh cadence; none can arm
+replacement ownership or publish host `0x08A`, and both longitudinal fields
+remain zero.
 
 Run the offline report with:
 

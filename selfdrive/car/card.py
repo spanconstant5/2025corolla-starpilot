@@ -17,7 +17,7 @@ from opendbc.car import DT_CTRL, ButtonType, structs
 from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallable
 from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
-from opendbc.car.car_helpers import get_car, interfaces
+from opendbc.car.car_helpers import create_corolla_tss3_fingerprint_keepalive, get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
@@ -124,16 +124,28 @@ class Car:
     self._favorite_virtual_releases = []
 
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
+    self.fingerprint_keepalive = None
 
     is_release = False
 
     if CI is None:
+      allow_tss3_fingerprint_keepalive = not os.environ.get('FINGERPRINT') and not self.params.get_bool("NAPForcePreAP")
+      if allow_tss3_fingerprint_keepalive:
+        self.fingerprint_keepalive = create_corolla_tss3_fingerprint_keepalive(self.params.get("CarModel"), self.can_callbacks[1])
+
       # wait for one pandaState and one CAN packet
       print("Waiting for CAN messages...")
       while True:
         can = messaging.recv_one_retry(self.can_sock)
         if len(can.can) > 0:
           break
+
+      # Native pandad is now receiving CAN and its send thread is available.
+      # Start the inactive signer challenge before waiting on any other startup
+      # service; fingerprint() keeps the same transport alive through census.
+      if self.fingerprint_keepalive is not None:
+        initial_frames = [CanData(msg.address, bytes(msg.dat), msg.src) for msg in can.can]
+        self.fingerprint_keepalive.update(initial_frames)
 
       alpha_long_allowed = self.params.get_bool("AlphaLongitudinalEnabled")
       num_pandas = len(messaging.recv_one_retry(self.sm.sock['pandaStates']).pandaStates)
@@ -145,9 +157,11 @@ class Car:
           cached_params = _cached_params
 
       self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, self.params, num_pandas, cached_params,
-                        get_starpilot_toggles(read_persisted_force_params=True))
+                        get_starpilot_toggles(read_persisted_force_params=True), fingerprint_keepalive=self.fingerprint_keepalive)
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP)
       self.CP = self.CI.CP
+      if self.CP.carFingerprint != "TOYOTA_COROLLA_TSS3":
+        self.fingerprint_keepalive = None
 
       # continue onto next fingerprinting step in pandad
       self.params.put_bool("FirmwareQueryDone", True)
@@ -291,6 +305,15 @@ class Car:
 
     # Update carState from CAN
     CS, FPCS = self.CI.update(can_list, self.starpilot_toggles)
+    if self.fingerprint_keepalive is not None:
+      if CS.canValid:
+        # The normal Toyota interface takes over preflight on this same step.
+        self.fingerprint_keepalive = None
+      elif can_list:
+        for nanos, frames in can_list:
+          self.fingerprint_keepalive.update(frames, nanos)
+      else:
+        self.fingerprint_keepalive.update([])
     if self.CP.brand == 'mock':
       CS, FPCS = self.mock_carstate.update(CS, FPCS)
     self._inject_favorite_virtual_cruise_events(CS)
