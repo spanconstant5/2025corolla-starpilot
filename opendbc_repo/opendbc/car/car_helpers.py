@@ -14,7 +14,7 @@ from opendbc.car.fingerprints import eliminate_incompatible_cars, all_legacy_fin
 from opendbc.car.fw_versions import ObdCallback, get_fw_versions_ordered, get_present_ecus, match_fw_to_car
 from opendbc.car.hyundai.values import kia_ray_ev_vin
 from opendbc.car.mock.values import CAR as MOCK
-from opendbc.car.toyota.tss3 import COROLLA_ORACLE_PROFILE, ToyotaTss3RequestTransport
+from opendbc.car.toyota.tss3 import COROLLA_ORACLE_PROFILE, ORACLE_STARTUP_PREFLIGHT_RETRY_NS, ToyotaTss3RequestTransport
 from opendbc.car.toyota.tss3_census import matches_corolla_tss3_recovery_census
 from opendbc.car.toyota.values import CAR as TOYOTA, ToyotaSafetyFlags
 from opendbc.car.values import BRANDS
@@ -96,15 +96,18 @@ class CorollaTss3FingerprintKeepalive:
   def __init__(self, can_send: CanSendCallable):
     self.can_send = can_send
     self.native_08a_buses: set[int] = set()
-    self.transport = ToyotaTss3RequestTransport(CANPacker("toyota_tss3_pt_generated"), COROLLA_ORACLE_PROFILE)
+    self.transport = ToyotaTss3RequestTransport(
+      CANPacker("toyota_tss3_pt_generated"), COROLLA_ORACLE_PROFILE,
+      preflight_retry_interval_ns=ORACLE_STARTUP_PREFLIGHT_RETRY_NS,
+    )
     self.transport.observe([], True)
 
   def update(self, can_packet: list[CanData] | None = None, now_nanos: int | None = None) -> None:
     now_nanos = time.monotonic_ns() if now_nanos is None else int(now_nanos)
     if can_packet:
       self.native_08a_buses.update(
-        int(frame.src) for frame in can_packet
-        if int(frame.address) == 0x08A and len(bytes(frame.dat)) == 32 and int(frame.src) in (0, 2)
+        int(src) for address, dat, src in can_packet
+        if int(address) == 0x08A and len(bytes(dat)) == 32 and int(src) in (0, 2)
       )
     # Stored identity is necessary but not sufficient for pre-census traffic:
     # also require the live mirrored 32-byte TSS3 application plane.

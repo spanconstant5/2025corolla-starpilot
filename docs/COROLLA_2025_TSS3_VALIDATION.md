@@ -12,7 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Fingerprint handoff implemented, route validation pending | Commit `4d8c1700bf` reduced the first accepted runtime request from 10.296 s to 3.466 s after install, but that was still too late and produced no `0x7A9`. The same inactive transport now starts as soon as the live mirrored TSS3 plane is visible and spans fingerprint census plus parser warmup. |
+| Runtime signer preflight | Startup handoff corrected, route validation pending | Post-install routes at `26b862f997` proved the helper starts about 0.65 s after install, but its first publication was lost before the send subscriber connected and its post-fingerprint tuple input crashed `card`. The helper now accepts both CAN representations and retries an unproved startup challenge after 100 ms. Normal proven-signer refresh remains one second. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -80,10 +80,24 @@ final identity still requires the complete three-bus live census. The inactive
 transport now starts after `card` observes the mirrored 32-byte native `0x08A`
 plane on buses 0 and 2, continues through the fingerprint census, and remains
 the sole startup sender while the Corolla parsers warm up. On the first valid
-CarState, the normal Toyota interface takes over preflight. Every phase uses the same
-byte-exact inactive application and one-second refresh cadence; none can arm
-replacement ownership or publish host `0x08A`, and both longitudinal fields
-remain zero.
+CarState, the normal Toyota interface takes over preflight. Every phase uses the
+same byte-exact inactive application. None can arm replacement ownership or
+publish host `0x08A`, and both longitudinal fields remain zero.
+
+Two later post-install captures at clean commit
+`26b862f9976492775e8faaa9b8012caf62262e0d` began 0.620-0.657 s after separate
+successful installer probes. Fingerprint recovery repeatedly selected
+`TOYOTA_COROLLA_TSS3`, and Panda accepted the delivered aligned `0x777` frames
+with zero rejections, sequence mismatches, or nonzero longitudinal fields.
+There was still no `0x7A9` or host `0x08A`. Both captures show why: the helper's
+sequence-1 publication was generated before the `sendcan` subscriber was ready
+and never reached Panda, while the one-second retry delivered sequence 2 only
+at 2.169-2.231 s after install. After recovery, `card` then repeatedly crashed
+because its parser path supplies raw CAN tuples while the helper expected
+attribute-bearing `CanData` values. The startup-only transport now accepts both
+forms and retries an unanswered challenge every 100 ms until the first valid
+response. It remains inactive, never emits host `0x08A` or an ownership admin
+frame, and returns to the one-second cadence once signer liveness is proved.
 
 Run the offline report with:
 

@@ -173,6 +173,12 @@ class TestCanFingerprint:
     assert not keepalive.transport.control_long_active
     assert keepalive.transport.control_accel == 0.0
 
+    # card's post-fingerprint parser path uses raw (address, data, bus) tuples.
+    # Keep the same inactive transport alive across that representation change.
+    sent.clear()
+    keepalive.update([(NATIVE_08A_ADDR, bytes(32), 0)], now_nanos=1_010_000_000)
+    assert sent == []
+
     response = CanData(ORACLE_RESPONSE_ADDR, bytes.fromhex("c90100fe58a4166f"), 0)
     sent.clear()
     keepalive.update([response], now_nanos=1_020_000_000)

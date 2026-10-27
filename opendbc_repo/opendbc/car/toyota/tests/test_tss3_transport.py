@@ -5,7 +5,7 @@ from opendbc.car.can_definitions import CanData
 from opendbc.car.toyota.tss3 import (
   ADMIN_ADDR, ADMIN_BUS, CAMRY_ORACLE_PROFILE, COROLLA_ORACLE_PROFILE, DOWNSTREAM_BUS, NATIVE_08A_ADDR, ORACLE_BUS,
   ORACLE_MAX_PENDING_GENERATIONS, ORACLE_PREFLIGHT_INTERVAL_NS, ORACLE_PUBLICATION_DEADLINE_NS, ORACLE_REQUEST_ADDR,
-  ORACLE_RESPONSE_ADDR,
+  ORACLE_RESPONSE_ADDR, ORACLE_STARTUP_PREFLIGHT_RETRY_NS,
   PANDA_REJECTED_OFFSET, PANDA_RETURNED_OFFSET, SOURCE_BUS,
   ToyotaTss3RequestTransport, build_host_application, build_oracle_transport,
 )
@@ -228,6 +228,56 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
       now_nanos=1_000_000_000 + ORACLE_PREFLIGHT_INTERVAL_NS,
     )
     self.assertEqual(len([msg for msg in sends if msg.address == ORACLE_REQUEST_ADDR]), 4)
+
+  def test_corolla_startup_preflight_retries_dropped_first_publication(self):
+    transport = ToyotaTss3RequestTransport(
+      self.packer, COROLLA_ORACLE_PROFILE,
+      preflight_retry_interval_ns=ORACLE_STARTUP_PREFLIGHT_RETRY_NS,
+    )
+    transport.observe([], True)
+    first = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000,
+    )
+    self.assertEqual(corolla_request_from_sends(first)[0], 1)
+
+    after_timeout = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000 + ORACLE_PUBLICATION_DEADLINE_NS + 1,
+    )
+    self.assertEqual(after_timeout, [])
+
+    retry = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000 + ORACLE_STARTUP_PREFLIGHT_RETRY_NS,
+    )
+    sequence, application = corolla_request_from_sends(retry)
+    self.assertEqual(sequence, 2)
+    self.assertEqual(application[26], 2)
+    self.assertEqual(application[8:10], bytes(2))
+    self.assertEqual(application[11:13], bytes(2))
+
+  def test_preflight_retry_interval_must_exceed_response_deadline(self):
+    with self.assertRaisesRegex(ValueError, "must exceed"):
+      ToyotaTss3RequestTransport(
+        self.packer, COROLLA_ORACLE_PROFILE,
+        preflight_retry_interval_ns=ORACLE_PUBLICATION_DEADLINE_NS,
+      )
 
   def test_can_invalid_clears_preflight_readiness(self):
     transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)

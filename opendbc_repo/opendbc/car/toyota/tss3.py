@@ -33,6 +33,7 @@ ORACLE_SEQUENCE_MAX = 0x1F
 ORACLE_MAX_PENDING_GENERATIONS = 8
 ORACLE_PUBLICATION_DEADLINE_NS = 90_000_000
 ORACLE_PREFLIGHT_INTERVAL_NS = 1_000_000_000
+ORACLE_STARTUP_PREFLIGHT_RETRY_NS = 100_000_000
 
 ORACLE_CARRIER_C8_SIX_FRAME = "c8-six-frame"
 ORACLE_CARRIER_FUNCTIONAL_NIBBLE4 = "functional-nibble4"
@@ -163,9 +164,13 @@ class ToyotaTss3RequestTransport:
   host publication clock.
   """
 
-  def __init__(self, packer, oracle_profile: ToyotaTss3OracleProfile = CAMRY_ORACLE_PROFILE):
+  def __init__(self, packer, oracle_profile: ToyotaTss3OracleProfile = CAMRY_ORACLE_PROFILE,
+               preflight_retry_interval_ns: int = ORACLE_PREFLIGHT_INTERVAL_NS):
+    if preflight_retry_interval_ns <= ORACLE_PUBLICATION_DEADLINE_NS:
+      raise ValueError("preflight retry interval must exceed the response deadline")
     self.packer = packer
     self.oracle_profile = oracle_profile
+    self.preflight_retry_interval_ns = int(preflight_retry_interval_ns)
     self.can_valid = False
     self.control_enabled = False
     self.control_lat_active = False
@@ -442,8 +447,9 @@ class ToyotaTss3RequestTransport:
       self.preflight_timeouts += 1
       carlog.warning("Toyota TSS3 request plane preflight signer timeout")
 
-    reference_ns = self.last_signer_response_ns or self.last_preflight_request_ns
-    if reference_ns and now_ns - reference_ns < ORACLE_PREFLIGHT_INTERVAL_NS:
+    reference_ns = max(self.last_signer_response_ns, self.last_preflight_request_ns)
+    interval_ns = ORACLE_PREFLIGHT_INTERVAL_NS if self.signer_live else self.preflight_retry_interval_ns
+    if reference_ns and now_ns - reference_ns < interval_ns:
       return
 
     seq = self._allocate_oracle_sequence()
