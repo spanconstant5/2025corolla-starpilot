@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 from opendbc.car.can_definitions import CanData
 from opendbc.car.car_helpers import (FRAME_FINGERPRINT, _apply_starpilot_access_policy, _get_gm_stored_candidate_fallback,
-                                     _get_toyota_tss3_census_candidate, _normalize_gm_suburban_camera_candidate, can_fingerprint)
+                                     _get_toyota_tss3_census_candidate, _normalize_gm_suburban_camera_candidate,
+                                     _should_skip_fw_query_for_stored_tss3, can_fingerprint)
 from opendbc.car.toyota.tss3_census import COROLLA_TSS3_ADAS_CENSUS, COROLLA_TSS3_CAN_CENSUS, matches_corolla_tss3_recovery_census
 from opendbc.car.fingerprints import _FINGERPRINTS as FINGERPRINTS
 from opendbc.car.gm.values import CAR as GM
@@ -128,6 +129,15 @@ class TestCanFingerprint:
     assert matches_corolla_tss3_recovery_census(fingerprints)
     assert _get_toyota_tss3_census_candidate(fingerprints, TOYOTA.TOYOTA_COROLLA_TSS3) == TOYOTA.TOYOTA_COROLLA_TSS3
     assert _get_toyota_tss3_census_candidate(fingerprints, "MOCK") is None
+
+  @pytest.mark.parametrize("stored_candidate", [TOYOTA.TOYOTA_COROLLA_TSS3, str(TOYOTA.TOYOTA_COROLLA_TSS3),
+                                                 str(TOYOTA.TOYOTA_COROLLA_TSS3).encode()])
+  def test_corolla_tss3_stored_selection_skips_unproductive_fw_query(self, stored_candidate):
+    assert _should_skip_fw_query_for_stored_tss3(stored_candidate)
+
+  @pytest.mark.parametrize("stored_candidate", [None, "", "MOCK", TOYOTA.TOYOTA_COROLLA_TSS2])
+  def test_other_stored_selections_keep_fw_query(self, stored_candidate):
+    assert not _should_skip_fw_query_for_stored_tss3(stored_candidate)
 
   def test_corolla_tss3_recovery_rejects_missing_mirrored_plane(self):
     fingerprints = self._corolla_tss3_recovery_fingerprint()

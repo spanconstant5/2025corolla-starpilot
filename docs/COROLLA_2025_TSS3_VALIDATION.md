@@ -12,7 +12,7 @@ authority for the 2025 control messages.
 | RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
 | Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Alignment fixed, route validation pending | The October 26 post-install route had 71/71 carrier/application sequence mismatches and no `0x7A9`. Runtime now derives the application's six-bit sequence from the outer carrier, reproducing the passing installer request on its first probe. |
+| Runtime signer preflight | Startup handoff fixed, route validation pending | Aligned runtime requests were accepted by Panda but began 10.296 s after the passing installer probe and received no `0x7A9`. A stored Corolla selection now skips the unproductive firmware query, and `card` sends the exact inactive challenge during controls initialization to preserve the volatile resident. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -54,6 +54,26 @@ The route then exposed a deterministic runtime-only mismatch: every one of its
 carrier sequence. The aligned transport starts with the exact installer-proven
 sequence-1 carrier and remains aligned through carrier wrap.
 
+The next post-install pair at commit
+`0e3b5bf1d21d5efe91b8e5379abb48bcbd14abc3` ruled out sequence alignment as the
+remaining cause. Across both logs, Panda accepted all 224 aligned `0x777`
+frames forming 56 complete applications, with zero rejected publications and
+zero nonzero longitudinal fields, but the EPS returned no `0x7A9`. In the log
+that directly followed installation, the first runtime request began 10.296 s
+after the successful installer probe: about 4.9 s was spent reaching recovered
+fingerprint and another 5.4 s waiting for controls initialization. The vehicle
+also moved at up to 1.048 m/s and changed gears, so this pair is diagnostic
+evidence and not a stationary validation pass.
+
+For the next attempt, a persisted Corolla TSS3 selection bypasses VIN/firmware
+queries that have produced no usable firmware identity on this car. Identity
+is still accepted only after the complete three-bus live census matches. Once
+that match creates the Toyota interface, `card` issues the byte-exact inactive
+sequence-1 signer challenge while controls are still initializing and refreshes
+it at the normal one-second preflight cadence. This path cannot arm replacement
+ownership or publish host `0x08A`; lateral is inactive and both longitudinal
+fields remain zero.
+
 Run the offline report with:
 
 ```bash
@@ -80,7 +100,7 @@ also lists which bytes changed in native candidate frames.
 2. With the service brake firmly held, select Drive, release the parking brake,
    close all doors, enable cruise main, and engage/disengage once without allowing
    the car to move. Before the engagement edge, require a
-   `preflight_signer_live` record; otherwise PCM engagement remains blocked. Park
+   `preflight_signer_live` record from the startup handoff; otherwise PCM engagement remains blocked. Park
    is not an engageable gear and cannot exercise the normal request plane.
    Require a `signer_response_live` record, a `host_08a_active` record, accepted
    `0x777` and `0x08A` publications, zero rejected publications, and zero nonzero

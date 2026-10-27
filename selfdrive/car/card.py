@@ -489,6 +489,16 @@ class Car:
 
       self.CC_prev = CC
 
+  def startup_control_update(self, CS: car.CarState):
+    """Send interface-owned inactive startup traffic before controls are ready."""
+    get_startup_can_sends = getattr(self.CI, 'get_startup_can_sends', None)
+    if get_startup_can_sends is None:
+      return
+    now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
+    can_sends = get_startup_can_sends(now_nanos)
+    if can_sends:
+      self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
+
   def _update_openpilot_lead_state(self, CC: car.CarControl) -> None:
     lead_visible = bool(CC.hudControl.leadVisible)
     longitudinal_adjustment_active = lead_visible
@@ -588,6 +598,10 @@ class Car:
                    self.sm.seen['onroadEvents'])
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
+      if not self.sm.all_alive(['carControl']):
+        self.startup_control_update(CS)
+    elif not self.CP.passive:
+      self.startup_control_update(CS)
 
     self.initialized_prev = initialized
     self.CS_prev = CS

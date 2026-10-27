@@ -82,6 +82,10 @@ def _normalize_forced_candidate(candidate: str | None) -> str | None:
   return LEGACY_FORCED_CANDIDATE_MAP.get(candidate, candidate)
 
 
+def _should_skip_fw_query_for_stored_tss3(stored_candidate: str | None) -> bool:
+  return _normalize_forced_candidate(stored_candidate) == str(TOYOTA.TOYOTA_COROLLA_TSS3)
+
+
 def _normalize_gm_bolt_candidate(candidate: str | None, fingerprints: dict[int, dict], vin: str | None = None) -> str | None:
   """
   Normalize ambiguous/mismatched Bolt candidates using robust PT message signatures.
@@ -265,6 +269,17 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
   skip_fw_query = os.environ.get('SKIP_FW_QUERY', False)
   disable_fw_cache = os.environ.get('DISABLE_FW_CACHE', False)
   ecu_rx_addrs = set()
+
+  stored_candidate = Params().get("CarModel")
+  usable_fw_cache = (cached_params is not None and cached_params.brand != "mock" and len(cached_params.carFw) > 0 and
+                     cached_params.carVin != VIN_UNKNOWN)
+  if (not fixed_fingerprint and not skip_fw_query and not disable_fw_cache and not usable_fw_cache and
+      _should_skip_fw_query_for_stored_tss3(stored_candidate)):
+    # The exact Corolla is recovered only after its complete three-bus live CAN
+    # census matches. Avoid spending the volatile signer's startup lifetime on
+    # a firmware query which has yielded no identifying firmware on this car.
+    skip_fw_query = True
+    carlog.warning("Stored Corolla TSS3 selection: using CAN-only fingerprint to preserve signer liveness")
 
   if not fixed_fingerprint and Params().get_bool("NAPForcePreAP"):
     fixed_fingerprint = "TESLA_MODEL_S_PREAP"

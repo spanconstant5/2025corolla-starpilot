@@ -19,6 +19,24 @@ class CarInterface(CarInterfaceBase):
   CarController = CarController
   RadarInterface = RadarInterface
 
+  def get_startup_can_sends(self, now_nanos: int):
+    transport = self.CC.tss3_request_transport
+    if transport is None:
+      return []
+
+    # Keep the volatile EPS signer alive while selfdrived/controlsd finish
+    # initialization. This is an inactive challenge only: it cannot arm host
+    # ownership, publish 0x08A, or request longitudinal actuation.
+    return transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=now_nanos,
+    )
+
   def update(self, can_packets, starpilot_toggles):
     ret, fp_ret = super().update(can_packets, starpilot_toggles)
     if self.CC.tss3_request_transport is not None:

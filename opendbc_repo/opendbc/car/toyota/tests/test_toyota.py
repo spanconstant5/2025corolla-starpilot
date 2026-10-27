@@ -23,6 +23,7 @@ from opendbc.car.toyota.carstate import CarState, LKAS_BUTTON_CAR, calculate_int
 from opendbc.car.toyota.fingerprints import FW_VERSIONS
 from opendbc.car.toyota.interface import CarInterface
 from opendbc.car.toyota.radar_interface import RadarInterface, TSSP_RADAR_EGO_SPEED_SCALE
+from opendbc.car.toyota.tss3 import NATIVE_08A_ADDR, ORACLE_REQUEST_ADDR
 from opendbc.car.toyota.values import CAR, DBC, MIN_ACC_SPEED, TSS2_CAR, ANGLE_CONTROL_CAR, RADAR_ACC_CAR, SECOC_CAR, \
                                                   FW_QUERY_CONFIG, PLATFORM_CODE_ECUS, FUZZY_EXCLUDED_PLATFORMS, \
                                                   ToyotaFlags, ToyotaSafetyFlags, ToyotaStarPilotFlags, TOYOTA_AUTO_HOLD_CARS, \
@@ -50,6 +51,24 @@ class TestToyotaInterfaces:
     assert not state.steerFaultTemporary
     assert state.blockPcmEnable
     assert starpilot_state is not None
+
+  def test_corolla_tss3_startup_traffic_is_inactive_signer_challenge_only(self):
+    cp = CarInterface.get_non_essential_params(CAR.TOYOTA_COROLLA_TSS3)
+    interface = CarInterface(cp, custom.StarPilotCarParams.new_message())
+    transport = interface.CC.tss3_request_transport
+    transport.observe([], True)
+
+    sends = interface.get_startup_can_sends(1_000_000_000)
+
+    requests = [msg for msg in sends if msg.address == ORACLE_REQUEST_ADDR]
+    assert [msg.dat[0] for msg in requests] == [0x81, 0x90, 0xA1, 0xB0]
+    assert b"".join(msg.dat[1:] for msg in requests) == bytes.fromhex(
+      "0000000880002d4700000000007fff007fff0000c000100032000100"
+    )
+    assert not any(msg.address == NATIVE_08A_ADDR for msg in sends)
+    assert not transport.control_enabled
+    assert not transport.control_long_active
+    assert transport.control_accel == 0.0
 
   def test_car_sets(self):
     assert len(ANGLE_CONTROL_CAR - TSS2_CAR) == 0
