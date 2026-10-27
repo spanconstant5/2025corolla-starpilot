@@ -20,6 +20,9 @@ from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import create_corolla_tss3_fingerprint_keepalive, get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
+from openpilot.selfdrive.car.toyota_tss3_request_signer import (
+  COROLLA_TSS3_MODEL, TSS3_SIGNER_STARTUP_BRIDGE_PARAM, tss3_startup_bridge_release_ready,
+)
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import (
@@ -160,8 +163,9 @@ class Car:
                         get_starpilot_toggles(read_persisted_force_params=True), fingerprint_keepalive=self.fingerprint_keepalive)
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP)
       self.CP = self.CI.CP
-      if self.CP.carFingerprint != "TOYOTA_COROLLA_TSS3":
+      if self.CP.carFingerprint != COROLLA_TSS3_MODEL:
         self.fingerprint_keepalive = None
+        self.params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
 
       # continue onto next fingerprinting step in pandad
       self.params.put_bool("FirmwareQueryDone", True)
@@ -314,6 +318,14 @@ class Car:
           self.fingerprint_keepalive.update(frames, nanos)
       else:
         self.fingerprint_keepalive.update([])
+    if (self.params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM) and
+        tss3_startup_bridge_release_ready(self.CP.carFingerprint, CS.canValid, self.params.get_bool("IsOnroad"))):
+      # The manager intentionally clears this on every offroad -> onroad
+      # transition. Fingerprinting may have finished while card was prewarmed,
+      # so restore it after that transition before handing startup back.
+      self.params.put_bool("FirmwareQueryDone", True)
+      self.params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      carlog.info("Toyota TSS3 startup bridge released after live CarState handoff")
     if self.CP.brand == 'mock':
       CS, FPCS = self.mock_carstate.update(CS, FPCS)
     self._inject_favorite_virtual_cruise_events(CS)

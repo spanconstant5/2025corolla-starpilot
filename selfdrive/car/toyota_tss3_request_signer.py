@@ -19,6 +19,13 @@ EXPECTED_APPLICATION_F181 = "023839363546313230383030300000000038413331313132313
 EXPECTED_HOST_SHA256 = "6914a964a0871de7c35fb1e35e3671f379a2b83f5e16deabbc810ea401871fee"
 EXPECTED_PAYLOAD_SHA256 = "72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122"
 PASS_VERDICT = "request_signer_live_probe_pass"
+COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
+TSS3_SIGNER_STARTUP_BRIDGE_PARAM = "Tss3SignerStartupBridge"
+
+
+def tss3_startup_bridge_release_ready(car_fingerprint: str, can_valid: bool, onroad: bool) -> bool:
+  """Release prewarm ownership only after the real Corolla card path is live."""
+  return car_fingerprint != COROLLA_TSS3_MODEL or (can_valid and onroad)
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from openpilot.selfdrive.car import toyota_tss3_request_signer as signer
 
 
@@ -28,6 +30,17 @@ def _make_kit(tmp_path: Path, monkeypatch) -> Path:
   monkeypatch.setattr(signer, "EXPECTED_HOST_SHA256", host_hash)
   monkeypatch.setattr(signer, "EXPECTED_PAYLOAD_SHA256", payload_hash)
   return tool
+
+
+@pytest.mark.parametrize("fingerprint,can_valid,onroad,expected", [
+  (signer.COROLLA_TSS3_MODEL, False, False, False),
+  (signer.COROLLA_TSS3_MODEL, True, False, False),
+  (signer.COROLLA_TSS3_MODEL, False, True, False),
+  (signer.COROLLA_TSS3_MODEL, True, True, True),
+  ("MOCK", False, False, True),
+])
+def test_startup_bridge_release_requires_live_onroad_corolla(fingerprint, can_valid, onroad, expected):
+  assert signer.tss3_startup_bridge_release_ready(fingerprint, can_valid, onroad) is expected
 
 
 def test_compatibility_accepts_exact_corolla_kit(tmp_path, monkeypatch):

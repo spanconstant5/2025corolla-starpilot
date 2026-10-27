@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.common.params import Params
-from openpilot.selfdrive.car.toyota_tss3_request_signer import request_signer_kit_compatibility
+from openpilot.selfdrive.car.toyota_tss3_request_signer import (
+  COROLLA_TSS3_MODEL, TSS3_SIGNER_STARTUP_BRIDGE_PARAM, request_signer_kit_compatibility,
+)
 
 
 DEFAULT_TOOL_PATH = Path("/data/tss3-oracle/tss3-request-signer")
@@ -20,7 +22,6 @@ INSTALL_SCHEMA = "tss3-request-signer-install-v1"
 INSTALL_PASS_VERDICT = "request_signer_live_probe_pass"
 OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v1"
 OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
-COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
 
 STAGE_LABELS = {
   "arming": "starting",
@@ -225,7 +226,7 @@ def preserve_install_result(run_dir: Path | None, status: dict[str, Any]) -> dic
 
 
 class Tss3SignerRunner:
-  """Own one guided NRTD-to-READY request-signer bringup process."""
+  """Own one guided OFF-to-READY request-signer bringup process."""
 
   def __init__(self, tool_path: Path = DEFAULT_TOOL_PATH, run_root: Path = DEFAULT_RUN_ROOT, *, start: bool = True,
                params: Params | None = None):
@@ -274,6 +275,10 @@ class Tss3SignerRunner:
       })
       return
 
+    # Start card offroad before the installer claims Panda. Its Python imports
+    # and messaging subscriptions can finish while the operator waits to power
+    # the car, eliminating the post-probe startup gap that expires the signer.
+    self._params.put_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     self._run_dir = self._run_root / f"ui-bringup-{stamp}-{os.getpid()}-{time.monotonic_ns()}"
     cmd = [str(self._tool_path), "ui-bringup", str(self._run_dir)]
@@ -291,6 +296,7 @@ class Tss3SignerRunner:
         start_new_session=True,
       )
     except OSError as exc:
+      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
       self._set_status({
         "stage": "error",
         "title": "Could not arm Corolla RAM signer",
@@ -335,4 +341,6 @@ class Tss3SignerRunner:
       # ambiguous FPv1 run can recover it only when the live census also fits.
       self._params.put("CarMake", "Toyota")
       self._params.put("CarModel", COROLLA_TSS3_MODEL)
+    else:
+      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
     self._set_status(status)

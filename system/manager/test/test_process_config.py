@@ -11,12 +11,14 @@ from openpilot.system.manager.process_config import (
   allow_uploads,
   bluetooth_enabled,
   camera_run,
+  card_run,
   managed_processes,
   sentry_mode,
   soundd_run,
   ublox,
   wheel_controls_enabled,
 )
+from openpilot.selfdrive.car.toyota_tss3_request_signer import TSS3_SIGNER_STARTUP_BRIDGE_PARAM
 
 
 class FakeParams:
@@ -49,6 +51,17 @@ def test_allow_uploads(started, no_uploads, no_onroad_uploads, always_allow_uplo
 
 def test_uploader_runs_at_background_priority():
   assert managed_processes["uploader"].nice == 19
+
+
+@pytest.mark.parametrize("started,bridge_active,expected", [
+  (False, False, False),
+  (False, True, True),
+  (True, False, True),
+  (True, True, True),
+])
+def test_card_prewarms_for_tss3_signer_handoff(started, bridge_active, expected):
+  params = SimpleNamespace(get_bool=lambda key: bridge_active if key == TSS3_SIGNER_STARTUP_BRIDGE_PARAM else False)
+  assert card_run(started, params, car.CarParams.new_message(), SimpleNamespace()) is expected
 
 
 def test_mapd_runs_onroad_or_during_offroad_map_transfer(monkeypatch):

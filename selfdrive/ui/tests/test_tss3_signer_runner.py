@@ -20,6 +20,20 @@ def status_row(**overrides):
   }
 
 
+class MemoryParams:
+  def __init__(self):
+    self.values = {}
+
+  def put(self, key, value):
+    self.values[key] = value
+
+  def put_bool(self, key, value):
+    self.values[key] = bool(value)
+
+  def remove(self, key):
+    self.values.pop(key, None)
+
+
 def test_completion_requires_done_status_and_clean_exit():
   for returncode in (0, 2):
     report = runner.SignerStatus()
@@ -47,7 +61,7 @@ def test_stage_instruction_does_not_keep_showing_wait_for_armed():
 
 
 def test_done_is_not_published_before_backend_exit():
-  signer_runner = runner.Tss3SignerRunner(start=False)
+  signer_runner = runner.Tss3SignerRunner(start=False, params=MemoryParams())
 
   def wait_for_exit():
     status = signer_runner.snapshot()
@@ -146,7 +160,7 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
     "verdict": runner.INSTALL_PASS_VERDICT,
   }), encoding="utf-8")
 
-  signer_runner = runner.Tss3SignerRunner(start=False)
+  signer_runner = runner.Tss3SignerRunner(start=False, params=MemoryParams())
   signer_runner._run_dir = run_dir
   signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
   signer_runner._reader()
@@ -159,20 +173,14 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
 
 
 def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
-  class FakeParams:
-    def __init__(self):
-      self.values = {}
-
-    def put(self, key, value):
-      self.values[key] = value
-
   run_dir = tmp_path / "run"
   run_dir.mkdir()
   (run_dir / "request-signer-install.json").write_text(json.dumps({
     "schema": runner.INSTALL_SCHEMA,
     "verdict": runner.INSTALL_PASS_VERDICT,
   }), encoding="utf-8")
-  params = FakeParams()
+  params = MemoryParams()
+  params.put_bool(runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
   signer_runner = runner.Tss3SignerRunner(start=False, params=params)
   signer_runner._run_dir = run_dir
   signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
@@ -181,21 +189,16 @@ def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
 
   assert params.values["CarMake"] == "Toyota"
   assert params.values["CarModel"] == runner.COROLLA_TSS3_MODEL
+  assert params.values[runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM] is True
 
 
 def test_failed_signer_probe_does_not_persist_corolla_identity(tmp_path: Path):
-  class FakeParams:
-    def __init__(self):
-      self.values = {}
-
-    def put(self, key, value):
-      self.values[key] = value
-
   (tmp_path / "request-signer-install.json").write_text(json.dumps({
     "schema": runner.INSTALL_SCHEMA,
     "verdict": "request_signer_live_probe_failed",
   }), encoding="utf-8")
-  params = FakeParams()
+  params = MemoryParams()
+  params.put_bool(runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
   signer_runner = runner.Tss3SignerRunner(start=False, params=params)
   signer_runner._run_dir = tmp_path
   signer_runner._proc = SimpleNamespace(
@@ -249,7 +252,23 @@ def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
   monkeypatch.setattr(runner.threading, "Thread", FakeThread)
 
   tool = tmp_path / "tss3-request-signer"
-  signer_runner = runner.Tss3SignerRunner(tool, tmp_path / "runs")
+  params = MemoryParams()
+  signer_runner = runner.Tss3SignerRunner(tool, tmp_path / "runs", params=params)
   assert commands[0][0][0:2] == [str(tool), "ui-bringup"]
   assert signer_runner.run_dir is not None
   assert commands[0][0][2] == str(signer_runner.run_dir)
+  assert params.values[runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM] is True
+
+
+def test_runner_releases_startup_bridge_when_tool_cannot_launch(tmp_path: Path, monkeypatch):
+  def fail_popen(*_args, **_kwargs):
+    raise OSError("missing")
+
+  monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
+  monkeypatch.setattr(runner.subprocess, "Popen", fail_popen)
+
+  params = MemoryParams()
+  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=params)
+
+  assert runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM not in params.values
+  assert signer_runner.snapshot()["error"] is True

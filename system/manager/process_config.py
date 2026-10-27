@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from cereal import car
 from openpilot.common.params import Params
 from opendbc.car.gps import car_gps_available
+from openpilot.selfdrive.car.toyota_tss3_request_signer import TSS3_SIGNER_STARTUP_BRIDGE_PARAM
 from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
@@ -74,6 +75,11 @@ def always_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggl
 
 def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started
+
+def card_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  # Preload card and its sendcan subscription while the guided installer owns
+  # Panda. It will already be waiting for CAN when the cooperative lease ends.
+  return started or params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started
@@ -188,7 +194,7 @@ procs = [
   PythonProcess("controlsd", "selfdrive.controls.controlsd", and_(not_joystick, iscar)),
   PythonProcess("joystickd", "tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "selfdrive.selfdrived.selfdrived", only_onroad),
-  PythonProcess("card", "selfdrive.car.card", only_onroad),
+  PythonProcess("card", "selfdrive.car.card", card_run),
   PythonProcess("deleter", "system.loggerd.deleter", always_run),
   PythonProcess("dmonitoringd", "selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "system.qcomgpsd.qcomgpsd", qcomgps, enabled=TICI),
