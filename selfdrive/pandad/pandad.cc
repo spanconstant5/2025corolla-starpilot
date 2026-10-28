@@ -85,7 +85,9 @@ Panda *connect(std::string serial="", uint32_t index=0) {
   //panda->enable_deepsleep();
 
   for (int i = 0; i < PANDA_CAN_CNT; i++) {
-    panda->set_can_fd_auto(i, true);
+    // Start in deterministic packet-local framing, matching Python Panda.
+    // PandaSafety restores automatic FD for non-TSS3 vehicles after fingerprinting.
+    panda->set_can_fd_auto(i, false);
   }
 
   if (!panda->up_to_date() && !getenv("BOARDD_SKIP_FW_CHECK")) {
