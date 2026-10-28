@@ -9,10 +9,10 @@ authority for the 2025 control messages.
 
 | Area | State | Evidence / next gate |
 |---|---|---|
-| RAM signer install | Proven | Exact F181 and payload SHA; live `0x777` to `0x7A9` probe passed in 9.72 ms. |
-| Bench peer health | Inconclusive | Brake `0x102D` fault bits were clear. Corolla returned an 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
+| RAM signer install | Proven | Two clean final-commit attempts matched exact F181 and payload SHA; first-attempt Classical-CAN `0x777` to `0x7A9` probes passed in 12.81 ms and 11.04 ms. |
+| Bench peer health | Inconclusive | Both attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Lightweight socket handoff implemented, button validation pending | Clean routes at `23560df817` proved the tuple/retry fixes: accepted `0x777` frames had zero rejections, sequence mismatches, or nonzero longitudinal fields. They also isolated the remaining delay to the `sendcan` subscriber connection after the installer released Panda. The guided flow now binds only card's messaging sockets offroad, waits for an explicit readiness acknowledgement, and defers the full controls stack until on-road. |
+| Runtime signer preflight | Packet-local CAN framing deployed; route validation pending | The final-commit UI archive proves the startup bridge and standalone Classical-CAN probe twice. It contains no qlog/rlog, so it cannot yet prove native `pandad` runtime `0x777`, `0x7A9`, or host `0x08A`. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -195,6 +195,26 @@ post-start reinstall, brake gates, and extended operator timeout are removed;
 the supported sequence is again vehicle OFF, arm UI bringup, then brake + POWER
 normally. Runtime validation must still prove `0x777`, `0x7A9`, payload-matched
 host `0x08A`, zero rejected publications, and zero in both longitudinal fields.
+
+The October 28 guided archive exercises the exact clean deployed framing tree
+`1c2a4ac69bfa8437ec9722fabecefb99dca3ed6d` twice. Both runs record branch
+`star2025`, the expected remote, and an acknowledged startup bridge. Each
+matched EPS F181 `8965F1208000 / 8A3111213000`, payload SHA-256
+`72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122`, and
+Panda `DEV-9250dab8-DEBUG` with a firmware signature match. Both boot-catch
+requests explicitly record `fd=false`, four accepted and zero rejected TX
+receipts, and a first-attempt status-zero `0x7A9` response in 12.81 ms and
+11.04 ms. This proves the installer side of the deployed tree. It does not yet
+exercise the new native-`pandad` packet framing because the archive contains no
+qlog or rlog.
+
+Both runs also repeat the same peer-health boundary: Brake `0x102D` failure
+bits are clear, while DID `0x102F` returns the stable eight-byte value
+`0700000000000000` that the Camry-oriented ten-byte decoder rejects as
+unsupported. The UI therefore preserves the proven signer install but correctly
+keeps vehicle health inconclusive; the unsupported layout is neither promoted
+to a fault nor treated as a health pass. The next required evidence is the
+stationary qlog/rlog from this commit or a descendant with no runtime changes.
 
 The installer summaries on the earlier runs marked clean builds dirty because
 persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`
