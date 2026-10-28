@@ -94,15 +94,6 @@ def test_cancel_is_cooperative_marker(tmp_path: Path):
   assert (run_dir / runner.CANCEL_FILENAME).read_text(encoding="utf-8") == "cancel\n"
 
 
-def test_closing_page_after_programming_does_not_cancel_finalization():
-  signer_runner = runner.Tss3SignerRunner(start=False, params=MemoryParams())
-  signer_runner._set_status(status_row(stage="programming", done=False, error=False))
-
-  signer_runner.request_cancel()
-
-  assert not signer_runner._cancelled.is_set()
-
-
 def test_proven_install_is_preserved_when_peer_verification_fails(tmp_path: Path):
   (tmp_path / "request-signer-install.json").write_text(json.dumps({
     "schema": runner.INSTALL_SCHEMA,
@@ -213,93 +204,6 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path, monkeypatch)
     "dirty": False,
   }
   assert summary["startup_bridge"] == {"supported": True, "requested": True, "acknowledged": True}
-  assert summary["post_start_reinstall"] == {
-    "supported": True,
-    "requested": False,
-    "stationary_ready": False,
-    "passed": False,
-    "safety_restored": False,
-  }
-
-
-def test_post_start_reinstall_requires_stationary_corolla_and_normal_safety():
-  CP = SimpleNamespace(carFingerprint=runner.COROLLA_TSS3_MODEL, openpilotLongitudinalControl=False)
-  CS = SimpleNamespace(
-    canValid=True,
-    canTimeout=False,
-    vEgo=0.0,
-    standstill=True,
-    gearShifter="park",
-    brakePressed=True,
-    parkingBrake=True,
-    cruiseState=SimpleNamespace(enabled=False),
-    steerFaultPermanent=False,
-    carFaultedNonCritical=False,
-    accFaulted=False,
-  )
-  car_state = SimpleNamespace(valid=True, carState=CS)
-  panda = SimpleNamespace(
-    safetyModel="toyota",
-    safetyParam=runner.COROLLA_TSS3_SAFETY_PARAM,
-    controlsAllowed=False,
-    heartbeatLost=False,
-    safetyRxChecksInvalid=False,
-    safetyRxInvalid=0,
-    faults=[],
-    faultStatus="none",
-  )
-  panda_states = SimpleNamespace(valid=True, pandaStates=[panda])
-
-  assert runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-  CS.brakePressed = False
-  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-  CS.brakePressed = True
-  CS.parkingBrake = False
-  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-  CS.parkingBrake = True
-  CS.vEgo = 0.1
-  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-  CS.vEgo = 0.0
-  panda.controlsAllowed = True
-  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-  panda.controlsAllowed = False
-  CP.openpilotLongitudinalControl = True
-  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
-
-
-def test_post_start_reinstall_waits_for_safety_before_and_after_install(tmp_path: Path, monkeypatch):
-  readiness_timeouts = []
-
-  def ready(*_args, timeout=runner.POST_START_READY_TIMEOUT_S, **_kwargs):
-    readiness_timeouts.append(timeout)
-    return True
-
-  monkeypatch.setattr(runner, "_wait_for_stationary_corolla", ready)
-
-  output_path = tmp_path / runner.POST_START_INSTALL_FILENAME
-
-  def fake_install(tool_path, *, output_path):
-    assert tool_path == tmp_path / "tss3-request-signer"
-    assert output_path == tmp_path / runner.POST_START_INSTALL_FILENAME
-    output_path.write_text("{}", encoding="utf-8")
-    return runner.SignerInstallResult(True, "live", "probe passed", output_path, 0)
-
-  monkeypatch.setattr(runner, "run_request_signer_install", fake_install)
-  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path, start=False, params=MemoryParams())
-  signer_runner._run_dir = tmp_path
-  result = signer_runner._perform_post_start_reinstall(status_row(stage="error", done=False, error=True))
-
-  assert readiness_timeouts == [runner.POST_START_OPERATOR_TIMEOUT_S, runner.POST_START_READY_TIMEOUT_S]
-  assert output_path.is_file()
-  assert result["post_start_reinstall"] is True
-  assert signer_runner._post_start_reinstall == {
-    "supported": True,
-    "requested": True,
-    "stationary_ready": True,
-    "passed": True,
-    "safety_restored": True,
-    "output": runner.POST_START_INSTALL_FILENAME,
-  }
 
 
 def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path, monkeypatch):

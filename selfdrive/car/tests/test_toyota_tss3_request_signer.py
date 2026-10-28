@@ -105,7 +105,6 @@ def test_install_passes_and_cycles_controls(tmp_path, monkeypatch):
     if command[1] == "install":
       Path(command[2]).write_text(json.dumps({
         "schema": "tss3-request-signer-install-v1",
-        "entry_condition": "application_programming_entry",
         "verdict": signer.PASS_VERDICT,
         "signer_probe": {"elapsed_ms": 8.506},
       }))
@@ -117,12 +116,9 @@ def test_install_passes_and_cycles_controls(tmp_path, monkeypatch):
 
   monkeypatch.setattr(signer.subprocess, "run", fake_run)
   monkeypatch.setattr(signer, "Params", FakeParams)
-  output_path = tmp_path / "guided-run" / "request-signer-post-start-install.json"
-  result = signer.run_request_signer_install(tool, output_path=output_path)
+  result = signer.run_request_signer_install(tool, tmp_path / "runs")
   assert result.passed
   assert "8.51 ms" in result.detail
-  assert result.output_path == output_path
-  assert output_path.is_file()
   assert requested == [("OnroadCycleRequested", True)]
 
 
@@ -133,7 +129,6 @@ def test_install_fails_safe_when_controls_cycle_cannot_be_requested(tmp_path, mo
     if command[1] == "install":
       Path(command[2]).write_text(json.dumps({
         "schema": "tss3-request-signer-install-v1",
-        "entry_condition": "application_programming_entry",
         "verdict": signer.PASS_VERDICT,
       }))
     return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()

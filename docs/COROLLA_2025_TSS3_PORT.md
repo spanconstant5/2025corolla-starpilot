@@ -77,16 +77,18 @@ malformed or stale lease is removed, while an unrequested native-child exit
 continues through StarPilot's existing recovery path. The rest of openpilot
 and its manager remain running throughout the handoff.
 
-The EPS resident is volatile and the normal startup delay exceeded its observed
-post-install lifetime even after the VIN/firmware query was removed. When
-`CarModel` already selects this exact Corolla, `card` starts the
+The EPS resident is volatile. When `CarModel` already selects this exact Corolla,
+`card` starts the
 installer-proven inactive `0x777` challenge as soon as live CAN also shows the
 mirrored 32-byte native `0x08A` plane on buses 0 and 2. One transport maintains
 the one-second cadence through CAN-only fingerprinting and parser warmup; the
 normal Toyota interface takes over on the first valid CarState. Fingerprint
 recovery still requires the complete live three-bus census. Panda's initial
 ELM327 safety mode admits the eight-byte
-`0x777` carrier, which contains no active lateral or longitudinal command. No
+`0x777` carrier, which contains no active lateral or longitudinal command.
+For `TSS3_SIGNER`, native `pandad` disables bus-wide automatic CAN-FD promotion
+and selects the format per packet: the eight-byte `0x777` carrier remains
+Classical CAN while 32-byte traffic remains CAN-FD. No
 phase uses signer admin, publishes host `0x08A`, or takes direct-Panda ownership.
 
 ## Guided startup sequence

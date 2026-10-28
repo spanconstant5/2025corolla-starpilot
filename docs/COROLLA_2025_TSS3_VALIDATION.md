@@ -167,78 +167,39 @@ build removes the bridge key from Params completely; the same per-run token now
 drives manager prewarm, launcher acknowledgement, cancellation cleanup, and the
 final valid-CAN handoff.
 
-Two guided runs on `1f5c255447ecffaf3c1d412fd3756920a2f8a82c` proved that
-token-file handoff: both archives record the exact commit and an acknowledged
-startup bridge. Both boot-catch installs matched the Corolla F181 and payload,
-used the expected `DEV-9250dab8-DEBUG` signed Panda firmware, and returned a
-successful first-attempt `0x777` to `0x7A9` probe in 10.26 ms and 12.37 ms, with
-four accepted and zero rejected frames each. The associated 5.439-second and
-50.944-second routes stayed in Park at exactly 0 m/s, recovered the exact
-non-fuzzy Corolla fingerprint, kept openpilot longitudinal disabled, and had no
-Panda faults, invalid RX checks, heartbeat loss, rejected TX, `canError`,
-`canBusMissing`, or `controlsMismatch`. The longer route reached Toyota safety
-param 53321.
+The guided runs from `1f5c255447ecffaf3c1d412fd3756920a2f8a82c` through
+`5784933a8c1a277492819d782ae999ad63756c8d` establish a more specific failure.
+Every boot-catch install used Python Panda, matched the Corolla F181 and payload,
+and returned a first-attempt `0x777` to `0x7A9` response in 10.26--16.18 ms.
+Normal runtime then published hundreds of accepted, sequence-aligned `0x777`
+fragments with zero rejects and zero in both longitudinal fields, but received no
+`0x7A9` and therefore published no host `0x08A`. The latest two guarded
+application-programming attempts reached their complete stationary interlock and
+were rejected with NRC `0x22`; those attempts did not address the runtime
+transport difference.
 
-The remaining failure is after the initial live probe. Across both routes, all
-356 runtime `0x777` fragments were accepted and formed 89 aligned applications,
-with zero rejected publications, sequence mismatches, or nonzero longitudinal
-fields. None received runtime `0x7A9`, so no host `0x08A` could be published.
-The first accepted runtime requests were only 0.730 s and 0.883 s after the
-successful installer probes. This rules out publisher startup and shows that the
-remainder of the vehicle boot transition invalidates the early boot-catch RAM
-resident before normal card operation.
+Source comparison with the working standalone path identified that difference.
+Python Panda initializes every bus with `canfd_auto=false`, preserving the
+eight-byte signer request as Classical CAN. Native `pandad` initialized every bus
+with `canfd_auto=true`; after this Corolla's 32-byte bus-0 traffic enabled FD,
+Panda promoted the eight-byte `0x777` request to CAN-FD. The send receipts prove
+acceptance by Panda safety, not the wire format seen by the EPS. The EPS resident
+was therefore never proven to have expired; the runtime request format was wrong.
 
-The guided flow now has a guarded second phase. After the boot-catch establishes
-the target and startup completes, it waits for fresh live state proving the exact
-Corolla, Park, 0 m/s, cruise and controls inactive, longitudinal disabled, valid
-CAN, and fault-free Toyota safety param 53321. Only then does it use the kit's
-reviewed application-programming entry to reinstall the same volatile payload.
-It requests the ordinary onroad process cycle afterward and requires fresh proof
-that the same stationary and Toyota-safety gates returned before reporting the
-result. Failure of any gate prevents the second install or fails closed with a
-do-not-drive result.
+For Toyota safety with `TSS3_SIGNER`, `pandad` now disables automatic FD
+promotion on every Panda bus and explicitly sets each outgoing packet's format:
+payloads of eight bytes or less use Classical CAN and larger payloads use CAN-FD.
+Other vehicles retain automatic FD behavior. Initial fingerprinting also starts
+with automatic promotion disabled, matching Python Panda. The speculative
+post-start reinstall, brake gates, and extended operator timeout are removed;
+the supported sequence is again vehicle OFF, arm UI bringup, then brake + POWER
+normally. Runtime validation must still prove `0x777`, `0x7A9`, payload-matched
+host `0x08A`, zero rejected publications, and zero in both longitudinal fields.
 
-The installer summaries marked these runs dirty because the persisted `GitDiff`
-included runtime-selected theme symlinks. Both route `initData` records are
-authoritative and report `dirty=false` at the exact commit. Future summaries use
-the same build metadata as `initData`, so runtime theme selection no longer
-mislabels an exact deployment as an uncommitted tree.
-
-The October 27 follow-up at clean commit
-`4967ab4f9586b54dd741428e74f04fa7cd605077` exercised that guarded second phase.
-Both routes recovered the exact non-fuzzy Corolla fingerprint with longitudinal
-disabled. The stationary route stayed in Park at 0 m/s, reached Toyota safety
-param 53321 without Panda faults, heartbeat loss, invalid RX checks,
-`canBusMissing`, `canError`, or `controlsMismatch`, and delivered 104 accepted
-runtime `0x777` fragments with zero rejects, sequence mismatches, or nonzero
-longitudinal fields. The signer still returned no runtime `0x7A9`, and no host
-`0x08A` was published. The post-start installer reached the application and then
-received NRC `0x22` (conditions not correct) for PROGRAMMING. Every CarState
-sample in the stationary route had `brakePressed=false`; the parking brake, Park,
-standstill, and other software gates were present. The next build therefore adds
-the missing programming interlocks: it proves the parking brake and service brake
-for the stable interval before installation, tells the operator to hold both
-through the handoff, and proves them again after controls return. It does not retry
-a rejected handoff or relax any fingerprint, safety, or longitudinal gate. The
-second route changed gears and reached 0.280 m/s, so it is diagnostic evidence and
-not a stationary validation pass.
-
-The October 28 follow-up at clean commit
-`806b14c1e516c8afed68fd1074725040937a2642` proved the brake interlocks are
-decoded correctly, but exposed an operator-window issue. The boot-catch again
-passed the exact signer probe on its first attempt (`0x777` to `0x7A9` in
-13.02 ms), and both routes recovered the exact non-fuzzy Corolla fingerprint
-with Toyota safety param 53321 and longitudinal disabled. Across the routes,
-Panda accepted all 516 runtime `0x777` fragments forming 129 aligned
-applications, with zero rejects, sequence mismatches, or nonzero longitudinal
-fields; the expired boot resident returned no runtime `0x7A9`, so no host
-`0x08A` was published. The UI correctly did not attempt programming because its
-25-second readiness window expired first. The combined Park, parking-brake,
-service-brake, standstill, and valid-CAN state appeared 44.26 seconds into the
-route and remained present for 2.64 seconds. The pre-install operator window is
-therefore extended to 90 seconds, while the post-install controls/safety restore
-timeout remains 25 seconds. The later gear changes and movement make these
-diagnostic routes, not stationary validation passes.
+The installer summaries on the earlier runs marked clean builds dirty because
+persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`
+was authoritative. Summaries now use the same build metadata as `initData` so
+runtime theme selection does not mislabel an exact deployment.
 
 Run the offline report with:
 
