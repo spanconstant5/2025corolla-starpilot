@@ -11,7 +11,6 @@ from typing import Any
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.toyota_tss3_request_signer import (
   COROLLA_TSS3_MODEL,
-  TSS3_SIGNER_STARTUP_BRIDGE_PARAM,
   TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH,
   TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH,
   request_signer_kit_compatibility,
@@ -293,6 +292,7 @@ class Tss3SignerRunner:
     self._run_dir: Path | None = None
     self._startup_bridge_requested = False
     self._startup_bridge_acknowledged = False
+    self._startup_bridge_token: str | None = None
     self._launch_pending = False
     self._cancelled = threading.Event()
     if start:
@@ -334,13 +334,8 @@ class Tss3SignerRunner:
       )
       temporary.write_text(token + "\n", encoding="utf-8")
       os.replace(temporary, TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH)
-      self._params.put_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
     except Exception as exc:
       _cleanup_bridge_files(token)
-      try:
-        self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
-      except Exception:
-        pass
       self._set_status({
         "stage": "error",
         "title": "Could not prepare Corolla signer handoff",
@@ -351,6 +346,7 @@ class Tss3SignerRunner:
       })
       return
 
+    self._startup_bridge_token = token
     self._startup_bridge_requested = True
     self._launch_pending = True
     threading.Thread(
@@ -363,7 +359,6 @@ class Tss3SignerRunner:
   def _launch_after_bridge_ready(self, token: str) -> None:
     if not _wait_for_startup_bridge(token, self._cancelled):
       self._launch_pending = False
-      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
       _cleanup_bridge_files(token)
       if not self._cancelled.is_set():
         self._set_status({
@@ -376,11 +371,12 @@ class Tss3SignerRunner:
         })
       return
 
-    _cleanup_bridge_files(token)
+    if _read_bridge_token(TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH) == token:
+      TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH.unlink(missing_ok=True)
     self._startup_bridge_acknowledged = True
     self._launch_pending = False
     if self._cancelled.is_set():
-      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      _cleanup_bridge_files(token)
       return
 
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
@@ -400,7 +396,7 @@ class Tss3SignerRunner:
         start_new_session=True,
       )
     except OSError as exc:
-      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      _cleanup_bridge_files(token)
       self._set_status({
         "stage": "error",
         "title": "Could not arm Corolla RAM signer",
@@ -415,8 +411,8 @@ class Tss3SignerRunner:
 
   def request_cancel(self) -> None:
     self._cancelled.set()
-    if self._launch_pending:
-      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+    if self._launch_pending and self._startup_bridge_token is not None:
+      _cleanup_bridge_files(self._startup_bridge_token)
     status = self.snapshot()
     proc = self._proc
     if proc is not None and proc.poll() is None and not status.get("done") and not status.get("error") and self._run_dir is not None:
@@ -451,5 +447,6 @@ class Tss3SignerRunner:
       self._params.put("CarMake", "Toyota")
       self._params.put("CarModel", COROLLA_TSS3_MODEL)
     else:
-      self._params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      if self._startup_bridge_token is not None:
+        _cleanup_bridge_files(self._startup_bridge_token)
     self._set_status(status)

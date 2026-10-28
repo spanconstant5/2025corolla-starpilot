@@ -113,15 +113,15 @@ application was dropped during subscriber startup and sequence 2 arrived
 1.267 s after install. The second vehicle moved at up to 0.419 m/s and is not a
 stationary pass.
 
-The guided UI sets a private, non-logged startup bridge before launching the
-installer. Manager starts a lightweight card launcher while the car is still
+The guided UI creates a private, tokenized `/tmp` startup lease before launching
+the installer. Manager starts a lightweight card launcher while the car is still
 off. It binds the normal `can` and `sendcan` messaging sockets, then explicitly
 acknowledges readiness to the UI. The external installer is not launched unless
 that exact per-run acknowledgement arrives. Full `card` imports, realtime setup,
 fingerprinting, and safety initialization remain strictly on-road. This gives
 native pandad's restarted `sendcan` subscriber time to connect to the already
 bound publisher without running the controls stack offroad. A failed installer
-clears the bridge immediately. A proven install retains it until `card` has
+clears the lease immediately. A proven install retains it until `card` has
 identified the exact Corolla, observed valid CAN, and seen the manager's on-road
 transition. The ordinary `ControlsReady` path remains solely responsible for
 selecting Toyota safety. This does not require NRTD, does not share direct Panda
@@ -152,10 +152,20 @@ The first button attempt intended to validate
 `94f33572becdd635827f4a68ab920ad078c4fb5e` caused the comma device to reboot
 before it could write a route. The only new button-time action was starting the
 entire heavy `card` process offroad. That design has been removed. The
-replacement launcher performs only messaging-socket and Params-backed
+replacement launcher performs only messaging-socket and token-file
 coordination offroad, reports an exact readiness token, and fails closed without
 starting the external tool if it is not ready within four seconds. The full
-card process cannot start until `IsOnroad` is true.
+card process cannot start until `IsOnroad` is true. The token file is the single
+source of truth because deployed builds use a tracked prebuilt ARM Params module;
+adding a source-only Params key otherwise produces `UnknownKeyName` on-device.
+
+The first button attempt on `e92c5cb6cc2142f91235d121307f70a89caf8f50`
+confirmed that exact mismatch: the UI contained the failure and displayed
+`Could not prepare Corolla signer handoff — UnknownKeyName` before launching the
+installer. No vehicle route was expected from that rejected attempt. The next
+build removes the bridge key from Params completely; the same per-run token now
+drives manager prewarm, launcher acknowledgement, cancellation cleanup, and the
+final valid-CAN handoff.
 
 Run the offline report with:
 

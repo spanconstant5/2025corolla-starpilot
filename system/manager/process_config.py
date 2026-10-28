@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from cereal import car
 from openpilot.common.params import Params
 from opendbc.car.gps import car_gps_available
-from openpilot.selfdrive.car.toyota_tss3_request_signer import TSS3_SIGNER_STARTUP_BRIDGE_PARAM
+from openpilot.selfdrive.car.toyota_tss3_request_signer import tss3_startup_bridge_active
 from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
@@ -79,7 +79,7 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_togg
 def card_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   # Preload card and its sendcan subscription while the guided installer owns
   # Panda. It will already be waiting for CAN when the cooperative lease ends.
-  return started or params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+  return started or tss3_startup_bridge_active()
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started

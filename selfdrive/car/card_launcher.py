@@ -10,7 +10,6 @@ import cereal.messaging as messaging
 
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.toyota_tss3_request_signer import (
-  TSS3_SIGNER_STARTUP_BRIDGE_PARAM,
   TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH,
   TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH,
 )
@@ -44,12 +43,10 @@ def main() -> None:
   can_sock = messaging.sub_sock('can', timeout=20)
   pm = messaging.PubMaster(CARD_PUBLISH_SERVICES)
 
-  if params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM):
-    token = _bridge_request_token()
-    if token is not None:
-      _publish_bridge_ready(token)
-
-    while params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM) and not params.get_bool("IsOnroad"):
+  token = _bridge_request_token()
+  if token is not None:
+    _publish_bridge_ready(token)
+    while _bridge_request_token() == token and not params.get_bool("IsOnroad"):
       time.sleep(0.02)
 
   if not params.get_bool("IsOnroad"):

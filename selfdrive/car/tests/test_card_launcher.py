@@ -24,7 +24,6 @@ def _load_launcher(tmp_path: Path, monkeypatch, params):
   params_module.Params = lambda: params
 
   signer_module = ModuleType("openpilot.selfdrive.car.toyota_tss3_request_signer")
-  signer_module.TSS3_SIGNER_STARTUP_BRIDGE_PARAM = "Tss3SignerStartupBridge"
   signer_module.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH = request_path
   signer_module.TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH = ready_path
 
@@ -46,8 +45,6 @@ def test_launcher_binds_sockets_offroad_then_imports_card_onroad(tmp_path, monke
     onroad_checks = 0
 
     def get_bool(self, key):
-      if key == "Tss3SignerStartupBridge":
-        return True
       assert key == "IsOnroad"
       self.onroad_checks += 1
       return self.onroad_checks >= 2
@@ -82,16 +79,23 @@ def test_launcher_binds_sockets_offroad_then_imports_card_onroad(tmp_path, monke
 
 def test_launcher_exits_offroad_when_bridge_is_cancelled(tmp_path, monkeypatch):
   class FakeParams:
-    bridge_checks = 0
-
     def get_bool(self, key):
-      if key == "Tss3SignerStartupBridge":
-        self.bridge_checks += 1
-        return self.bridge_checks == 1
       assert key == "IsOnroad"
       return False
 
   launcher, ready_path = _load_launcher(tmp_path, monkeypatch, FakeParams())
+  request_path = launcher.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH
+  real_read = launcher._bridge_request_token
+  checks = 0
+
+  def cancel_after_first_check():
+    nonlocal checks
+    checks += 1
+    if checks > 1:
+      request_path.unlink(missing_ok=True)
+    return real_read()
+
+  monkeypatch.setattr(launcher, "_bridge_request_token", cancel_after_first_check)
 
   launcher.main()
 

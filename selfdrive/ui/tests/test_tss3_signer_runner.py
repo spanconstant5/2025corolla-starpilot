@@ -202,7 +202,11 @@ def test_reader_writes_persistent_openpilot_summary(tmp_path: Path):
   assert summary["startup_bridge"] == {"supported": True, "requested": True, "acknowledged": True}
 
 
-def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
+def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path, monkeypatch):
+  request_path = tmp_path / "bridge-request"
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH", request_path)
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH", tmp_path / "bridge-ready")
+  request_path.write_text("lease-token\n", encoding="utf-8")
   run_dir = tmp_path / "run"
   run_dir.mkdir()
   (run_dir / "request-signer-install.json").write_text(json.dumps({
@@ -210,8 +214,8 @@ def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
     "verdict": runner.INSTALL_PASS_VERDICT,
   }), encoding="utf-8")
   params = MemoryParams()
-  params.put_bool(runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
   signer_runner = runner.Tss3SignerRunner(start=False, params=params)
+  signer_runner._startup_bridge_token = "lease-token"
   signer_runner._run_dir = run_dir
   signer_runner._proc = SimpleNamespace(stdout=io.StringIO(json.dumps(status_row()) + "\n"), wait=lambda: 0)
 
@@ -219,17 +223,19 @@ def test_proven_signer_probe_persists_corolla_identity(tmp_path: Path):
 
   assert params.values["CarMake"] == "Toyota"
   assert params.values["CarModel"] == runner.COROLLA_TSS3_MODEL
-  assert params.values[runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM] is True
+  assert request_path.read_text(encoding="utf-8") == "lease-token\n"
 
 
-def test_failed_signer_probe_does_not_persist_corolla_identity(tmp_path: Path):
+def test_failed_signer_probe_does_not_persist_corolla_identity(tmp_path: Path, monkeypatch):
+  use_temporary_bridge_paths(tmp_path, monkeypatch)
+  runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.write_text("lease-token\n", encoding="utf-8")
   (tmp_path / "request-signer-install.json").write_text(json.dumps({
     "schema": runner.INSTALL_SCHEMA,
     "verdict": "request_signer_live_probe_failed",
   }), encoding="utf-8")
   params = MemoryParams()
-  params.put_bool(runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM, True)
   signer_runner = runner.Tss3SignerRunner(start=False, params=params)
+  signer_runner._startup_bridge_token = "lease-token"
   signer_runner._run_dir = tmp_path
   signer_runner._proc = SimpleNamespace(
     stdout=io.StringIO(json.dumps(status_row(stage="error", done=False, error=True)) + "\n"),
@@ -239,6 +245,7 @@ def test_failed_signer_probe_does_not_persist_corolla_identity(tmp_path: Path):
   signer_runner._reader()
 
   assert params.values == {}
+  assert not runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()
 
 
 def test_failed_or_missing_install_is_not_reclassified(tmp_path: Path):
@@ -287,12 +294,20 @@ def test_runner_invokes_guided_ui_bringup(tmp_path: Path, monkeypatch):
   monkeypatch.setattr(runner, "_wait_for_startup_bridge", lambda *_args, **_kwargs: True)
 
   tool = tmp_path / "tss3-request-signer"
-  params = MemoryParams()
+  class ParamsWithoutBridgeKey(MemoryParams):
+    def put_bool(self, key, value):
+      raise AssertionError(f"startup bridge must not write Params key {key}={value}")
+
+    def remove(self, key):
+      raise AssertionError(f"startup bridge must not remove Params key {key}")
+
+  params = ParamsWithoutBridgeKey()
   signer_runner = runner.Tss3SignerRunner(tool, tmp_path / "runs", params=params)
   assert commands[0][0][0:2] == [str(tool), "ui-bringup"]
   assert signer_runner.run_dir is not None
   assert commands[0][0][2] == str(signer_runner.run_dir)
-  assert params.values[runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM] is True
+  assert runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()
+  assert params.values == {}
 
 
 def test_runner_releases_startup_bridge_when_tool_cannot_launch(tmp_path: Path, monkeypatch):
@@ -318,7 +333,8 @@ def test_runner_releases_startup_bridge_when_tool_cannot_launch(tmp_path: Path, 
   params = MemoryParams()
   signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=params)
 
-  assert runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM not in params.values
+  assert not runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()
+  assert params.values == {}
   assert signer_runner.snapshot()["error"] is True
 
 
@@ -343,19 +359,17 @@ def test_runner_does_not_launch_tool_without_socket_bridge_ack(tmp_path: Path, m
   signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=params)
 
   assert commands == []
-  assert runner.TSS3_SIGNER_STARTUP_BRIDGE_PARAM not in params.values
+  assert not runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()
+  assert params.values == {}
   assert signer_runner.snapshot()["error"] is True
 
 
-def test_runner_contains_bridge_param_failure_in_ui(tmp_path: Path, monkeypatch):
-  use_temporary_bridge_paths(tmp_path, monkeypatch)
+def test_runner_contains_bridge_file_failure_in_ui(tmp_path: Path, monkeypatch):
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH", tmp_path / "missing" / "bridge-request")
+  monkeypatch.setattr(runner, "TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH", tmp_path / "bridge-ready")
   monkeypatch.setattr(runner, "request_signer_kit_compatibility", lambda _path: SignerKitCheck(True, "verified"))
 
-  class BrokenParams(MemoryParams):
-    def put_bool(self, key, value):
-      raise RuntimeError(f"cannot write {key}={value}")
-
-  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=BrokenParams())
+  signer_runner = runner.Tss3SignerRunner(tmp_path / "tss3-request-signer", tmp_path / "runs", params=MemoryParams())
 
   assert signer_runner.snapshot()["error"] is True
   assert not runner.TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.exists()

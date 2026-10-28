@@ -21,7 +21,8 @@ from opendbc.car.car_helpers import create_corolla_tss3_fingerprint_keepalive, g
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from openpilot.selfdrive.car.toyota_tss3_request_signer import (
-  COROLLA_TSS3_MODEL, TSS3_SIGNER_STARTUP_BRIDGE_PARAM, tss3_startup_bridge_release_ready,
+  COROLLA_TSS3_MODEL, release_tss3_startup_bridge, tss3_startup_bridge_release_ready,
+  tss3_startup_bridge_token,
 )
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.common.constants import CV
@@ -103,6 +104,7 @@ class Car:
   FPCP: custom.StarPilotCarParams
 
   def __init__(self, CI=None, RI=None, can_sock=None, pm=None) -> None:
+    self.tss3_startup_bridge_token = tss3_startup_bridge_token()
     self.can_sock = can_sock if can_sock is not None else messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'radarState', 'longitudinalPlan'])
     self.pm = pm if pm is not None else messaging.PubMaster(
@@ -167,7 +169,7 @@ class Car:
       self.CP = self.CI.CP
       if self.CP.carFingerprint != COROLLA_TSS3_MODEL:
         self.fingerprint_keepalive = None
-        self.params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+        release_tss3_startup_bridge(self.tss3_startup_bridge_token)
 
       # continue onto next fingerprinting step in pandad
       self.params.put_bool("FirmwareQueryDone", True)
@@ -320,13 +322,14 @@ class Car:
           self.fingerprint_keepalive.update(frames, nanos)
       else:
         self.fingerprint_keepalive.update([])
-    if (self.params.get_bool(TSS3_SIGNER_STARTUP_BRIDGE_PARAM) and
+    if (self.tss3_startup_bridge_token is not None and
         tss3_startup_bridge_release_ready(self.CP.carFingerprint, CS.canValid, self.params.get_bool("IsOnroad"))):
-      # The manager intentionally clears this on every offroad -> onroad
-      # transition. Fingerprinting may have finished while card was prewarmed,
-      # so restore it after that transition before handing startup back.
+      # Fingerprinting may have finished while card was prewarmed. Keep the
+      # token lease until valid Corolla CAN is flowing onroad, then hand normal
+      # startup ownership back without changing safety selection.
       self.params.put_bool("FirmwareQueryDone", True)
-      self.params.remove(TSS3_SIGNER_STARTUP_BRIDGE_PARAM)
+      release_tss3_startup_bridge(self.tss3_startup_bridge_token)
+      self.tss3_startup_bridge_token = None
       carlog.info("Toyota TSS3 startup bridge released after live CarState handoff")
     if self.CP.brand == 'mock':
       CS, FPCS = self.mock_carstate.update(CS, FPCS)

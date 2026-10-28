@@ -20,9 +20,33 @@ EXPECTED_HOST_SHA256 = "6914a964a0871de7c35fb1e35e3671f379a2b83f5e16deabbc810ea4
 EXPECTED_PAYLOAD_SHA256 = "72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122"
 PASS_VERDICT = "request_signer_live_probe_pass"
 COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
-TSS3_SIGNER_STARTUP_BRIDGE_PARAM = "Tss3SignerStartupBridge"
 TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH = Path("/tmp/openpilot-tss3-card-bridge-request")
 TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH = Path("/tmp/openpilot-tss3-card-bridge-ready")
+
+
+def tss3_startup_bridge_token() -> str | None:
+  try:
+    token = TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.read_text(encoding="utf-8").strip()
+    return token or None
+  except OSError:
+    return None
+
+
+def tss3_startup_bridge_active() -> bool:
+  return tss3_startup_bridge_token() is not None
+
+
+def release_tss3_startup_bridge(expected_token: str | None = None) -> None:
+  """Release only the lease this caller observed, never a newer UI request."""
+  token = tss3_startup_bridge_token()
+  if token is None or (expected_token is not None and token != expected_token):
+    return
+  TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH.unlink(missing_ok=True)
+  try:
+    if TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH.read_text(encoding="utf-8").strip() == token:
+      TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH.unlink(missing_ok=True)
+  except OSError:
+    pass
 
 
 def tss3_startup_bridge_release_ready(car_fingerprint: str, can_valid: bool, onroad: bool) -> bool:

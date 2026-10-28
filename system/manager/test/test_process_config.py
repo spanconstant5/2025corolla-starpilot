@@ -18,7 +18,6 @@ from openpilot.system.manager.process_config import (
   ublox,
   wheel_controls_enabled,
 )
-from openpilot.selfdrive.car.toyota_tss3_request_signer import TSS3_SIGNER_STARTUP_BRIDGE_PARAM
 
 
 class FakeParams:
@@ -59,9 +58,9 @@ def test_uploader_runs_at_background_priority():
   (True, False, True),
   (True, True, True),
 ])
-def test_card_prewarms_for_tss3_signer_handoff(started, bridge_active, expected):
-  params = SimpleNamespace(get_bool=lambda key: bridge_active if key == TSS3_SIGNER_STARTUP_BRIDGE_PARAM else False)
-  assert card_run(started, params, car.CarParams.new_message(), SimpleNamespace()) is expected
+def test_card_prewarms_for_tss3_signer_handoff(started, bridge_active, expected, monkeypatch):
+  monkeypatch.setattr(process_config, "tss3_startup_bridge_active", lambda: bridge_active)
+  assert card_run(started, SimpleNamespace(), car.CarParams.new_message(), SimpleNamespace()) is expected
 
 
 def test_card_uses_lightweight_launcher_for_offroad_handoff():

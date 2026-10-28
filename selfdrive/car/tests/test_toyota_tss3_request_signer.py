@@ -43,6 +43,27 @@ def test_startup_bridge_release_requires_live_onroad_corolla(fingerprint, can_va
   assert signer.tss3_startup_bridge_release_ready(fingerprint, can_valid, onroad) is expected
 
 
+def test_startup_bridge_file_is_token_validated(tmp_path, monkeypatch):
+  request_path = tmp_path / "request"
+  ready_path = tmp_path / "ready"
+  monkeypatch.setattr(signer, "TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH", request_path)
+  monkeypatch.setattr(signer, "TSS3_SIGNER_STARTUP_BRIDGE_READY_PATH", ready_path)
+
+  assert not signer.tss3_startup_bridge_active()
+  request_path.write_text("old-token\n", encoding="utf-8")
+  ready_path.write_text("old-token\n", encoding="utf-8")
+  assert signer.tss3_startup_bridge_active()
+  assert signer.tss3_startup_bridge_token() == "old-token"
+
+  signer.release_tss3_startup_bridge("new-token")
+  assert request_path.exists()
+  assert ready_path.exists()
+
+  signer.release_tss3_startup_bridge("old-token")
+  assert not request_path.exists()
+  assert not ready_path.exists()
+
+
 def test_compatibility_accepts_exact_corolla_kit(tmp_path, monkeypatch):
   tool = _make_kit(tmp_path, monkeypatch)
   assert signer.request_signer_kit_compatibility(tool).compatible
