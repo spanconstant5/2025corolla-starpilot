@@ -29,6 +29,7 @@ OPENPILOT_SUMMARY_SCHEMA = "tss3-openpilot-bringup-summary-v2"
 OPENPILOT_SUMMARY_FILENAME = "openpilot-bringup-summary.json"
 STARTUP_BRIDGE_READY_TIMEOUT_S = 4.0
 POST_START_READY_TIMEOUT_S = 25.0
+POST_START_OPERATOR_TIMEOUT_S = 90.0
 POST_START_STABLE_S = 1.0
 POST_START_INSTALL_FILENAME = "request-signer-post-start-install.json"
 COROLLA_TSS3_SAFETY_PARAM = 53321
@@ -524,18 +525,20 @@ class Tss3SignerRunner:
       "stage": "programming",
       "title": "Waiting for stable Corolla startup",
       "detail": "Keep the vehicle in Park with the parking brake set and hold the service brake until completion. " +
-                "Verifying normal Toyota safety before the final RAM signer install.",
+                "The installer will wait up to 90 seconds for these programming interlocks and normal Toyota safety.",
       "done": False,
       "error": False,
     })
-    if not _wait_for_stationary_corolla(self._params, self._cancelled):
+    if not _wait_for_stationary_corolla(
+      self._params, self._cancelled, timeout=POST_START_OPERATOR_TIMEOUT_S,
+    ):
       self._post_start_reinstall["failure"] = "stationary_corolla_not_ready"
       return {
         **status,
         "stage": "error",
         "title": "Final Corolla signer install not started",
-        "detail": "Live state did not continuously prove Corolla, Park, parking brake, service brake held, 0 m/s, " +
-                  "controls inactive, and Toyota safety. Do not drive.",
+        "detail": "The 90-second interlock window expired before live state continuously proved Corolla, Park, " +
+                  "parking brake, service brake held, 0 m/s, controls inactive, and Toyota safety. Do not drive.",
         "done": False,
         "error": True,
       }

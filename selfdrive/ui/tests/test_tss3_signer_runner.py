@@ -268,12 +268,13 @@ def test_post_start_reinstall_requires_stationary_corolla_and_normal_safety():
 
 
 def test_post_start_reinstall_waits_for_safety_before_and_after_install(tmp_path: Path, monkeypatch):
-  readiness_checks = []
-  monkeypatch.setattr(
-    runner,
-    "_wait_for_stationary_corolla",
-    lambda *_args, **_kwargs: readiness_checks.append(True) is None or True,
-  )
+  readiness_timeouts = []
+
+  def ready(*_args, timeout=runner.POST_START_READY_TIMEOUT_S, **_kwargs):
+    readiness_timeouts.append(timeout)
+    return True
+
+  monkeypatch.setattr(runner, "_wait_for_stationary_corolla", ready)
 
   output_path = tmp_path / runner.POST_START_INSTALL_FILENAME
 
@@ -288,7 +289,7 @@ def test_post_start_reinstall_waits_for_safety_before_and_after_install(tmp_path
   signer_runner._run_dir = tmp_path
   result = signer_runner._perform_post_start_reinstall(status_row(stage="error", done=False, error=True))
 
-  assert len(readiness_checks) == 2
+  assert readiness_timeouts == [runner.POST_START_OPERATOR_TIMEOUT_S, runner.POST_START_READY_TIMEOUT_S]
   assert output_path.is_file()
   assert result["post_start_reinstall"] is True
   assert signer_runner._post_start_reinstall == {

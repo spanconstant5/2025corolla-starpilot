@@ -223,6 +223,23 @@ a rejected handoff or relax any fingerprint, safety, or longitudinal gate. The
 second route changed gears and reached 0.280 m/s, so it is diagnostic evidence and
 not a stationary validation pass.
 
+The October 28 follow-up at clean commit
+`806b14c1e516c8afed68fd1074725040937a2642` proved the brake interlocks are
+decoded correctly, but exposed an operator-window issue. The boot-catch again
+passed the exact signer probe on its first attempt (`0x777` to `0x7A9` in
+13.02 ms), and both routes recovered the exact non-fuzzy Corolla fingerprint
+with Toyota safety param 53321 and longitudinal disabled. Across the routes,
+Panda accepted all 516 runtime `0x777` fragments forming 129 aligned
+applications, with zero rejects, sequence mismatches, or nonzero longitudinal
+fields; the expired boot resident returned no runtime `0x7A9`, so no host
+`0x08A` was published. The UI correctly did not attempt programming because its
+25-second readiness window expired first. The combined Park, parking-brake,
+service-brake, standstill, and valid-CAN state appeared 44.26 seconds into the
+route and remained present for 2.64 seconds. The pre-install operator window is
+therefore extended to 90 seconds, while the post-install controls/safety restore
+timeout remains 25 seconds. The later gear changes and movement make these
+diagnostic routes, not stationary validation passes.
+
 Run the offline report with:
 
 ```bash
