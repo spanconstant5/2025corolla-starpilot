@@ -206,7 +206,8 @@ def _stationary_corolla_ready(CP: Any, car_state_event: Any, panda_states_event:
 
   CS = car_state_event.carState
   if (not CS.canValid or CS.canTimeout or abs(float(CS.vEgo)) > 0.01 or
-      not CS.standstill or str(CS.gearShifter) != "park" or CS.cruiseState.enabled or
+      not CS.standstill or str(CS.gearShifter) != "park" or not CS.brakePressed or
+      not CS.parkingBrake or CS.cruiseState.enabled or
       CS.steerFaultPermanent or CS.carFaultedNonCritical or CS.accFaulted):
     return False
 
@@ -522,7 +523,8 @@ class Tss3SignerRunner:
       **status,
       "stage": "programming",
       "title": "Waiting for stable Corolla startup",
-      "detail": "Keep the vehicle in Park. Verifying normal Toyota safety before the final RAM signer install.",
+      "detail": "Keep the vehicle in Park with the parking brake set and hold the service brake until completion. " +
+                "Verifying normal Toyota safety before the final RAM signer install.",
       "done": False,
       "error": False,
     })
@@ -532,7 +534,8 @@ class Tss3SignerRunner:
         **status,
         "stage": "error",
         "title": "Final Corolla signer install not started",
-        "detail": "Live state did not prove Corolla, Park, 0 m/s, controls inactive, and Toyota safety. Do not drive.",
+        "detail": "Live state did not continuously prove Corolla, Park, parking brake, service brake held, 0 m/s, " +
+                  "controls inactive, and Toyota safety. Do not drive.",
         "done": False,
         "error": True,
       }
@@ -542,7 +545,8 @@ class Tss3SignerRunner:
       **status,
       "stage": "programming",
       "title": "Finalizing Corolla RAM signer",
-      "detail": "Startup is stable and stationary. Reinstalling the volatile signer after the final EPS boot transition.",
+      "detail": "Programming interlocks are stable. Keep holding the service brake while the volatile signer is " +
+                "reinstalled after the final EPS boot transition.",
       "done": False,
       "error": False,
     })
@@ -565,7 +569,7 @@ class Tss3SignerRunner:
       **status,
       "stage": "finishing",
       "title": "Restoring normal Corolla safety",
-      "detail": "The post-start signer probe passed. Waiting for card and Toyota safety to return while parked.",
+      "detail": "The post-start signer probe passed. Keep holding the service brake while card and Toyota safety return.",
       "done": False,
       "error": False,
     })

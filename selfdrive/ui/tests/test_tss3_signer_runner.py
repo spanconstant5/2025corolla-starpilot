@@ -230,6 +230,8 @@ def test_post_start_reinstall_requires_stationary_corolla_and_normal_safety():
     vEgo=0.0,
     standstill=True,
     gearShifter="park",
+    brakePressed=True,
+    parkingBrake=True,
     cruiseState=SimpleNamespace(enabled=False),
     steerFaultPermanent=False,
     carFaultedNonCritical=False,
@@ -249,6 +251,12 @@ def test_post_start_reinstall_requires_stationary_corolla_and_normal_safety():
   panda_states = SimpleNamespace(valid=True, pandaStates=[panda])
 
   assert runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
+  CS.brakePressed = False
+  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
+  CS.brakePressed = True
+  CS.parkingBrake = False
+  assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
+  CS.parkingBrake = True
   CS.vEgo = 0.1
   assert not runner._stationary_corolla_ready(CP, car_state, panda_states, is_onroad=True, controls_ready=True)
   CS.vEgo = 0.0

@@ -204,6 +204,25 @@ authoritative and report `dirty=false` at the exact commit. Future summaries use
 the same build metadata as `initData`, so runtime theme selection no longer
 mislabels an exact deployment as an uncommitted tree.
 
+The October 27 follow-up at clean commit
+`4967ab4f9586b54dd741428e74f04fa7cd605077` exercised that guarded second phase.
+Both routes recovered the exact non-fuzzy Corolla fingerprint with longitudinal
+disabled. The stationary route stayed in Park at 0 m/s, reached Toyota safety
+param 53321 without Panda faults, heartbeat loss, invalid RX checks,
+`canBusMissing`, `canError`, or `controlsMismatch`, and delivered 104 accepted
+runtime `0x777` fragments with zero rejects, sequence mismatches, or nonzero
+longitudinal fields. The signer still returned no runtime `0x7A9`, and no host
+`0x08A` was published. The post-start installer reached the application and then
+received NRC `0x22` (conditions not correct) for PROGRAMMING. Every CarState
+sample in the stationary route had `brakePressed=false`; the parking brake, Park,
+standstill, and other software gates were present. The next build therefore adds
+the missing programming interlocks: it proves the parking brake and service brake
+for the stable interval before installation, tells the operator to hold both
+through the handoff, and proves them again after controls return. It does not retry
+a rejected handoff or relax any fingerprint, safety, or longitudinal gate. The
+second route changed gears and reached 0.280 m/s, so it is diagnostic evidence and
+not a stationary validation pass.
+
 Run the offline report with:
 
 ```bash
