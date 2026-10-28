@@ -167,6 +167,43 @@ build removes the bridge key from Params completely; the same per-run token now
 drives manager prewarm, launcher acknowledgement, cancellation cleanup, and the
 final valid-CAN handoff.
 
+Two guided runs on `1f5c255447ecffaf3c1d412fd3756920a2f8a82c` proved that
+token-file handoff: both archives record the exact commit and an acknowledged
+startup bridge. Both boot-catch installs matched the Corolla F181 and payload,
+used the expected `DEV-9250dab8-DEBUG` signed Panda firmware, and returned a
+successful first-attempt `0x777` to `0x7A9` probe in 10.26 ms and 12.37 ms, with
+four accepted and zero rejected frames each. The associated 5.439-second and
+50.944-second routes stayed in Park at exactly 0 m/s, recovered the exact
+non-fuzzy Corolla fingerprint, kept openpilot longitudinal disabled, and had no
+Panda faults, invalid RX checks, heartbeat loss, rejected TX, `canError`,
+`canBusMissing`, or `controlsMismatch`. The longer route reached Toyota safety
+param 53321.
+
+The remaining failure is after the initial live probe. Across both routes, all
+356 runtime `0x777` fragments were accepted and formed 89 aligned applications,
+with zero rejected publications, sequence mismatches, or nonzero longitudinal
+fields. None received runtime `0x7A9`, so no host `0x08A` could be published.
+The first accepted runtime requests were only 0.730 s and 0.883 s after the
+successful installer probes. This rules out publisher startup and shows that the
+remainder of the vehicle boot transition invalidates the early boot-catch RAM
+resident before normal card operation.
+
+The guided flow now has a guarded second phase. After the boot-catch establishes
+the target and startup completes, it waits for fresh live state proving the exact
+Corolla, Park, 0 m/s, cruise and controls inactive, longitudinal disabled, valid
+CAN, and fault-free Toyota safety param 53321. Only then does it use the kit's
+reviewed application-programming entry to reinstall the same volatile payload.
+It requests the ordinary onroad process cycle afterward and requires fresh proof
+that the same stationary and Toyota-safety gates returned before reporting the
+result. Failure of any gate prevents the second install or fails closed with a
+do-not-drive result.
+
+The installer summaries marked these runs dirty because the persisted `GitDiff`
+included runtime-selected theme symlinks. Both route `initData` records are
+authoritative and report `dirty=false` at the exact commit. Future summaries use
+the same build metadata as `initData`, so runtime theme selection no longer
+mislabels an exact deployment as an uncommitted tree.
+
 Run the offline report with:
 
 ```bash

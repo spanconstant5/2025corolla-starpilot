@@ -166,7 +166,8 @@ def _failure(title: str, detail: str, output_path: Path | None = None,
   return SignerInstallResult(False, title, detail, output_path, returncode)
 
 
-def run_request_signer_install(tool_path: Path | None = None, run_root: Path | None = None) -> SignerInstallResult:
+def run_request_signer_install(tool_path: Path | None = None, run_root: Path | None = None, *,
+                               output_path: Path | None = None) -> SignerInstallResult:
   """Run the proven volatile Corolla install and cycle controls to restore Panda car safety."""
   tool = _tool_path(tool_path)
   check = request_signer_kit_compatibility(tool)
@@ -184,29 +185,37 @@ def run_request_signer_install(tool_path: Path | None = None, run_root: Path | N
     detail = (doctor.stderr or doctor.stdout or "doctor returned no details").strip()[-1200:]
     return _failure("RAM signer preflight failed", detail, returncode=doctor.returncode)
 
-  stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-  run_dir = _run_root(run_root) / f"ui-{stamp}-{os.getpid()}"
-  try:
-    run_dir.mkdir(parents=True, exist_ok=False)
-  except FileExistsError:
-    run_dir = run_dir.with_name(f"{run_dir.name}-{time.monotonic_ns()}")
-    run_dir.mkdir(parents=True, exist_ok=False)
-  except OSError as exc:
-    return _failure("RAM signer could not start", f"Could not create result directory: {exc}")
+  if output_path is None:
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    run_dir = _run_root(run_root) / f"ui-{stamp}-{os.getpid()}"
+    try:
+      run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+      run_dir = run_dir.with_name(f"{run_dir.name}-{time.monotonic_ns()}")
+      run_dir.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+      return _failure("RAM signer could not start", f"Could not create result directory: {exc}")
+    output_path = run_dir / "install.json"
+  else:
+    run_dir = output_path.parent
+    try:
+      run_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+      return _failure("RAM signer could not start", f"Could not create result directory: {exc}", output_path)
 
-  output_path = run_dir / "install.json"
+  log_path = output_path.with_suffix(".log")
   try:
     install = subprocess.run(
       [str(tool), "install", str(output_path)], cwd=str(tool.parent), stdin=subprocess.DEVNULL,
       capture_output=True, text=True, timeout=120, check=False,
     )
   except subprocess.TimeoutExpired as exc:
-    _write_log(run_dir / "install.log", _timeout_text(exc.stdout) + _timeout_text(exc.stderr))
+    _write_log(log_path, _timeout_text(exc.stdout) + _timeout_text(exc.stderr))
     return _failure("RAM signer install timed out", "Installer exceeded the 120 second limit. Keep the car parked and inspect the saved log.", output_path)
   except OSError as exc:
     return _failure("RAM signer could not start", f"{type(exc).__name__}: {exc}", output_path)
 
-  _write_log(run_dir / "install.log", install.stdout + install.stderr)
+  _write_log(log_path, install.stdout + install.stderr)
   if install.returncode != 0:
     detail = (install.stderr or install.stdout or "installer returned no details").strip()[-1200:]
     return _failure("RAM signer install failed", detail, output_path, install.returncode)
@@ -218,6 +227,13 @@ def run_request_signer_install(tool_path: Path | None = None, run_root: Path | N
 
   if result.get("schema") != "tss3-request-signer-install-v1" or result.get("verdict") != PASS_VERDICT:
     return _failure("RAM signer live probe failed", f"Unexpected verdict: {result.get('verdict', 'missing')}", output_path, install.returncode)
+  if result.get("entry_condition") != "application_programming_entry":
+    return _failure(
+      "RAM signer install mode invalid",
+      f"Expected application-mode install, got: {result.get('entry_condition', 'missing')}",
+      output_path,
+      install.returncode,
+    )
 
   probe = result.get("signer_probe") if isinstance(result.get("signer_probe"), dict) else {}
   elapsed_ms = probe.get("elapsed_ms")
