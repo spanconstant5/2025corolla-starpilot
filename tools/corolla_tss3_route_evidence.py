@@ -78,6 +78,8 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   signer_responses = FrameEvidence()
   signer_requests = FrameEvidence()
   signer_request_tx_receipts = FrameEvidence()
+  signer_request_tx_accepted_receipts = FrameEvidence()
+  signer_request_tx_rejected_receipts = FrameEvidence()
   host_08a = FrameEvidence()
   bus_0_tx_receipts_08a = FrameEvidence()
   matched_host_08a_echo = FrameEvidence()
@@ -113,6 +115,11 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   panda_controls_allowed_count = 0
   panda_rx_checks_invalid_count = 0
   panda_faults: Counter[str] = Counter()
+  panda_safety_transitions: list[tuple[int, str]] = []
+  last_panda_safety_mode: str | None = None
+  device_started_counts: Counter[bool] = Counter()
+  device_started_transitions: list[tuple[int, bool]] = []
+  last_device_started: bool | None = None
   start_ns: int | None = None
   end_ns: int | None = None
 
@@ -170,9 +177,20 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
       for onroad_event in event.onroadEvents:
         onroad_events[str(onroad_event.name)] += 1
       continue
+    if which == "deviceState":
+      started = bool(event.deviceState.started)
+      device_started_counts[started] += 1
+      if started != last_device_started:
+        device_started_transitions.append((timestamp, started))
+        last_device_started = started
+      continue
     if which == "pandaStates":
       for state in event.pandaStates:
-        panda_safety_modes[f"{state.safetyModel}:{int(state.safetyParam)}"] += 1
+        safety_mode = f"{state.safetyModel}:{int(state.safetyParam)}"
+        panda_safety_modes[safety_mode] += 1
+        if safety_mode != last_panda_safety_mode:
+          panda_safety_transitions.append((timestamp, safety_mode))
+          last_panda_safety_mode = safety_mode
         panda_controls_allowed_count += int(state.controlsAllowed)
         panda_rx_checks_invalid_count += int(state.safetyRxChecksInvalid)
         for fault in state.faults:
@@ -236,6 +254,10 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
           signer_request_tx_receipts.observe(bus, data, timestamp)
           signer_request_tx_accepted += int(bus == 0x80)
           signer_request_tx_rejected += int(bus == 0xC0)
+          if bus == 0x80:
+            signer_request_tx_accepted_receipts.observe(bus, data, timestamp)
+          elif bus == 0xC0:
+            signer_request_tx_rejected_receipts.observe(bus, data, timestamp)
         elif address == 0x08A:
           bus_0_tx_receipts_08a.observe(bus, data, timestamp)
           # Forwarded native 0x08A traffic also creates bus-0 TX receipts. Only
@@ -273,7 +295,25 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
       "nonzero_actuator_accel_count": car_control_nonzero_accel_count,
       "selfdrive_state_count": selfdrive_state_count,
       "selfdrive_engageable_count": selfdrive_engageable_count,
+      "device_started_counts": {
+        "true": device_started_counts[True],
+        "false": device_started_counts[False],
+      },
+      "device_started_transitions": [
+        {
+          "offset_s": None if start_ns is None else round((timestamp - start_ns) / 1e9, 6),
+          "started": started,
+        }
+        for timestamp, started in device_started_transitions
+      ],
       "panda_safety_modes": dict(sorted(panda_safety_modes.items())),
+      "panda_safety_transitions": [
+        {
+          "offset_s": None if start_ns is None else round((timestamp - start_ns) / 1e9, 6),
+          "mode": mode,
+        }
+        for timestamp, mode in panda_safety_transitions
+      ],
       "panda_controls_allowed_count": panda_controls_allowed_count,
       "panda_rx_checks_invalid_count": panda_rx_checks_invalid_count,
       "panda_faults": dict(sorted(panda_faults.items())),
@@ -281,6 +321,8 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
     "signer": {
       "requests_0x777": signer_requests.as_dict(start_ns),
       "request_tx_receipts_0x777": signer_request_tx_receipts.as_dict(start_ns),
+      "request_tx_accepted_receipts_0x777": signer_request_tx_accepted_receipts.as_dict(start_ns),
+      "request_tx_rejected_receipts_0x777": signer_request_tx_rejected_receipts.as_dict(start_ns),
       "request_tx_accepted_count": signer_request_tx_accepted,
       "request_tx_rejected_count": signer_request_tx_rejected,
       "complete_request_applications": signer_applications,

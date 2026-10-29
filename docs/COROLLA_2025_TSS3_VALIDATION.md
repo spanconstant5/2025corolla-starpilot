@@ -9,10 +9,10 @@ authority for the 2025 control messages.
 
 | Area | State | Evidence / next gate |
 |---|---|---|
-| RAM signer install | Proven | Four clean October 29 attempts at exact commit `02c3d23135` matched F181 and payload SHA; every first-attempt Classical-CAN `0x777` to `0x7A9` probe passed in 9.59--11.74 ms. |
-| Bench peer health | Inconclusive | All four attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
+| RAM signer install | Proven | Six clean October 29 attempts matched F181 and payload SHA. The latest two ran exact commit `9d9a220573`; both first-attempt Classical-CAN `0x777` to `0x7A9` probes passed in 9.92 and 12.59 ms. |
+| Bench peer health | Inconclusive | All six attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. The October 29 route proves native runtime signing but contains no engagement, so it cannot prove host `0x08A` publication. |
-| Runtime signer preflight | Native framing proven; sustained keepalive pending | Runtime produced status-zero `0x7A9` for accepted Classical-CAN `0x777`, proving the rebuilt native transport. Responses stopped 7.732 s after install under the inherited 1 Hz preflight. Corolla now keeps one inactive challenge response-paced at up to 100 Hz, matching the only sustained benchmark; repeat stationary validation on the new commit. |
+| Runtime signer preflight | Short sustained keepalive proven; safety handoff pending | Exact commit `9d9a220573` produced 142 status-zero bus-0 responses to 143 response-paced inactive challenges over a 2.95 s route. The route went offroad before Panda left ELM327 safety, so repeat stationary validation long enough to cross the Toyota-safety transition and prior eight-second boundary. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -270,6 +270,27 @@ flight and replaces it immediately after a valid response, bounded by the
 100 Hz controller. A missing response still times out and falls back to bounded
 retry. This changes neither ownership nor actuation: preflight emits no admin
 arm or host `0x08A`, and both longitudinal fields remain zero.
+
+The later October 29 archive validates that response-paced behavior on exact,
+clean commit `9d9a2205734bfafd32c41c0c52b22166fdb6e265`. Its 2.954 s route
+formed 143 aligned inactive applications and recorded 142 status-zero
+responses on bus 0, mirrored on bus 2. Panda accepted 568 request fragments;
+the only four rejects were one complete final challenge at 2.914 s, after
+`deviceState.started` changed false at 2.880 s. The route therefore ended on an
+ordinary offroad transition, not an OS reboot. It remained stationary in Park,
+with exact non-fuzzy Corolla fingerprinting, no CAN timeout, no Panda fault or
+invalid RX check, no enabled/active control, no host `0x08A`, and zero in both
+longitudinal fields. Panda remained in ELM327 safety for the entire short route,
+so this capture still does not test the Toyota-safety handoff or the earlier
+eight-second lifetime boundary. Its route timestamps also precede the first
+installer run saved in the same archive; that installer ran about 14 seconds
+after the route ended and passed its first live probe in 9.92 ms. A second
+installer run passed in 12.59 ms without a monotonic-clock restart.
+
+The offline evidence report now records `deviceState.started` transitions,
+Panda safety transitions, and separate accepted/rejected `0x777` receipt
+timelines. This prevents shutdown rejects from being mistaken for an onroad
+transport failure and makes the next safety-handoff boundary directly visible.
 
 The installer summaries on the earlier runs marked clean builds dirty because
 persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`

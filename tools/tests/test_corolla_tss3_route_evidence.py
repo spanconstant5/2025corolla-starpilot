@@ -28,6 +28,7 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
     Event(kind="can", logMonoTime=1_002_000_000, can=[
       can_frame(0x7A9, 0, bytes.fromhex("c90100fe7defe3ef")),
       can_frame(0x777, 0x80, bytes.fromhex("810000000880002d")),
+      can_frame(0x777, 0xC0, bytes.fromhex("904700000000007f")),
       can_frame(0x08A, 0x80, signed),
       can_frame(0x160, 1, bytes(32)),
     ]),
@@ -40,9 +41,12 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["duration_s"] == 0.003
   assert result["schema"] == "corolla-tss3-route-evidence-v3"
   assert result["signer"]["requests_0x777"]["count"] == 4
-  assert result["signer"]["request_tx_receipts_0x777"]["count"] == 1
+  assert result["signer"]["request_tx_receipts_0x777"]["count"] == 2
   assert result["signer"]["request_tx_accepted_count"] == 1
-  assert result["signer"]["request_tx_rejected_count"] == 0
+  assert result["signer"]["request_tx_rejected_count"] == 1
+  assert result["signer"]["request_tx_accepted_receipts_0x777"]["count"] == 1
+  assert result["signer"]["request_tx_rejected_receipts_0x777"]["count"] == 1
+  assert result["signer"]["request_tx_rejected_receipts_0x777"]["first_offset_s"] == 0.002
   assert result["signer"]["complete_request_applications"] == 1
   assert result["signer"]["request_application_longitudinal_nonzero_count"] == 0
   assert result["signer"]["request_application_sequence_mismatch_count"] == 0
@@ -100,8 +104,16 @@ def test_route_evidence_records_deployment_vehicle_and_safety_gates():
           selfdriveState=SimpleNamespace(engageable=False)),
     Event(kind="onroadEvents", logMonoTime=1_005_000_000,
           onroadEvents=[SimpleNamespace(name="wrongGear")]),
+    Event(kind="deviceState", logMonoTime=1_005_500_000,
+          deviceState=SimpleNamespace(started=True)),
     Event(kind="pandaStates", logMonoTime=1_006_000_000, pandaStates=[SimpleNamespace(
       safetyModel="toyota", safetyParam=53321, controlsAllowed=False,
+      safetyRxChecksInvalid=False, faults=[],
+    )]),
+    Event(kind="deviceState", logMonoTime=1_007_000_000,
+          deviceState=SimpleNamespace(started=False)),
+    Event(kind="pandaStates", logMonoTime=1_008_000_000, pandaStates=[SimpleNamespace(
+      safetyModel="noOutput", safetyParam=0, controlsAllowed=False,
       safetyRxChecksInvalid=False, faults=[],
     )]),
   ]
@@ -120,6 +132,15 @@ def test_route_evidence_records_deployment_vehicle_and_safety_gates():
   assert result["vehicle"]["onroad_events"] == {"wrongGear": 1}
   assert result["control"]["long_active_count"] == 0
   assert result["control"]["nonzero_actuator_accel_count"] == 0
-  assert result["control"]["panda_safety_modes"] == {"toyota:53321": 1}
+  assert result["control"]["device_started_counts"] == {"true": 1, "false": 1}
+  assert result["control"]["device_started_transitions"] == [
+    {"offset_s": 0.0055, "started": True},
+    {"offset_s": 0.007, "started": False},
+  ]
+  assert result["control"]["panda_safety_modes"] == {"noOutput:0": 1, "toyota:53321": 1}
+  assert result["control"]["panda_safety_transitions"] == [
+    {"offset_s": 0.006, "mode": "toyota:53321"},
+    {"offset_s": 0.008, "mode": "noOutput:0"},
+  ]
   assert result["control"]["panda_controls_allowed_count"] == 0
   assert result["control"]["panda_rx_checks_invalid_count"] == 0

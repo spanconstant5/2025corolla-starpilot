@@ -136,8 +136,10 @@ The ordered evidence gates and post-route analysis command are maintained in
 
 - Road-qualify this exact StarPilot integration while stationary first, then
   under controlled driving conditions.
-- Reduce or explain Panda RX-buffer overflow and repeat a longer sustained-rate
-  benchmark.
+- Repeat the stationary sustained-rate benchmark long enough to cross both the
+  ELM327-to-Toyota safety transition and the earlier eight-second signer
+  boundary. The latest four rejected request fragments occurred only after the
+  device changed offroad and do not establish RX-buffer overflow.
 - Dynamically validate the 2025 steering calibration and driver-override
   threshold rather than relying indefinitely on inherited E210 geometry.
 - Complete an unambiguous fingerprint and standard firmware-query mapping.
