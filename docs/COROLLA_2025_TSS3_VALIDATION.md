@@ -216,6 +216,31 @@ keeps vehicle health inconclusive; the unsupported layout is neither promoted
 to a fault nor treated as a health pass. The next required evidence is the
 stationary qlog/rlog from this commit or a descendant with no runtime changes.
 
+The later October 28 archive from the same clean source commit closes that
+provenance question and exposes a deployment failure. Its installer again
+matched the exact F181 pair and payload, transmitted four explicit Classical-CAN
+`0x777` frames with four accepts and zero rejects, and received status-zero
+`0x7A9` on the first attempt in 9.23 ms. Across the two following routes, Panda
+accepted 436 runtime `0x777` fragments forming 106 aligned applications, with
+zero rejected publications, zero carrier/application sequence mismatches, and
+zero in both longitudinal fields. Neither route received `0x7A9` or published a
+payload-matched host `0x08A`. The longer route moved at up to 1.952 m/s; the
+shorter route changed gears and recorded `canBusMissing`, `canError`, and
+`controlsMismatch`, so neither is a stationary validation pass.
+
+The tracked `prebuilt` marker explains why those routes did not actually run the
+new native framing code. It suppresses the on-device source build, and the
+tracked ARM `selfdrive/pandad/pandad` was last rebuilt at
+`fedb206c6046af078cc5472ae99b338b9636f7bb`, before the packet-local FD and
+startup-auto-FD changes. `initData` correctly described the checked-out source
+commit, but could not prove the provenance of that stale executable. The ARM
+binary has now been rebuilt from the exact current transport tree. Its SHA-256
+is `571b3744c77cf7c28bfd139a6418437c2fe697f5110c23bf04d8e9cb14fd73bd`;
+disassembly confirms startup disables auto-FD on all three buses, Toyota safety
+keeps it disabled when the TSS3 signer bit is set, and packet packing sets FD
+only for payloads longer than eight bytes. A prebuilt-policy test now rejects a
+clean checkout whose tracked pandad predates its transport sources.
+
 The installer summaries on the earlier runs marked clean builds dirty because
 persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`
 was authoritative. Summaries now use the same build metadata as `initData` so
