@@ -183,11 +183,16 @@ class TestCanFingerprint:
     sent.clear()
     keepalive.update([response], now_nanos=1_020_000_000)
     assert keepalive.transport.signer_ready()
-    assert sent == []
-
-    keepalive.update(now_nanos=2_020_000_000)
     requests = [msg for msg in sent if msg.address == ORACLE_REQUEST_ADDR]
     assert [msg.dat[0] for msg in requests] == [0x82, 0x90, 0xA2, 0xB0]
+    assert not any(msg.address == NATIVE_08A_ADDR for msg in sent)
+
+    # No response means no further live-cadence request. Once the 90 ms
+    # response deadline passes, the normal 100 ms startup retry applies.
+    sent.clear()
+    keepalive.update(now_nanos=2_020_000_000)
+    requests = [msg for msg in sent if msg.address == ORACLE_REQUEST_ADDR]
+    assert [msg.dat[0] for msg in requests] == [0x83, 0x90, 0xA3, 0xB0]
     assert not any(msg.address == NATIVE_08A_ADDR for msg in sent)
 
   @pytest.mark.parametrize("stored_candidate", [None, "MOCK", TOYOTA.TOYOTA_COROLLA_TSS2])

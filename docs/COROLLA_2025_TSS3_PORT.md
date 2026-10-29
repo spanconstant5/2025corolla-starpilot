@@ -81,9 +81,13 @@ The EPS resident is volatile. When `CarModel` already selects this exact Corolla
 `card` starts the
 installer-proven inactive `0x777` challenge as soon as live CAN also shows the
 mirrored 32-byte native `0x08A` plane on buses 0 and 2. One transport maintains
-the one-second cadence through CAN-only fingerprinting and parser warmup; the
-normal Toyota interface takes over on the first valid CarState. Fingerprint
-recovery still requires the complete live three-bus census. Panda's initial
+a single response-paced inactive challenge through CAN-only fingerprinting and
+parser warmup; the normal Toyota interface takes over on the first valid
+CarState. Successful Corolla responses refill that single challenge at no more
+than the 100 Hz controller cadence, matching the only sustained live benchmark.
+An unanswered challenge still times out and uses the bounded startup retry
+instead of accumulating requests. Fingerprint recovery still requires the
+complete live three-bus census. Panda's initial
 ELM327 safety mode admits the eight-byte
 `0x777` carrier, which contains no active lateral or longitudinal command.
 For `TSS3_SIGNER`, native `pandad` disables bus-wide automatic CAN-FD promotion

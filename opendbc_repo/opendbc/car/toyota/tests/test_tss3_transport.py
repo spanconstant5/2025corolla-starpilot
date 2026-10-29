@@ -145,7 +145,7 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
     self.assertEqual(diagnostics["max_pending_requests"], 1)
     self.assertEqual(diagnostics["last_response_latency_ms"], 8.0)
 
-  def test_corolla_preflight_proves_signer_without_publishing(self):
+  def test_corolla_preflight_proves_and_sustains_signer_without_publishing(self):
     transport = ToyotaTss3RequestTransport(self.packer, COROLLA_ORACLE_PROFILE)
     transport.observe([], True)
     sends = transport.update_control(
@@ -180,11 +180,40 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
       long_active=False,
       accel=0.0,
       set_speed_kph=0.0,
+      now_nanos=1_009_000_000,
+    )
+    self.assertEqual(sends, [])
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
       now_nanos=1_010_000_000,
+    )
+    next_sequence, next_application = corolla_request_from_sends(sends)
+    self.assertEqual(next_sequence, 2)
+    self.assertEqual(next_application[8:10], bytes(2))
+    self.assertEqual(next_application[11:13], bytes(2))
+    self.assertFalse(any(msg.address == ADMIN_ADDR and msg.dat[0] == 7 for msg in sends))
+    self.assertFalse(any(msg.address == NATIVE_08A_ADDR for msg in sends))
+
+    # Keep only one inactive challenge in flight. A missing response cannot
+    # turn the sustained preflight into an unbounded request stream.
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_020_000_000,
     )
     self.assertEqual(sends, [])
     diagnostics = transport.diagnostic_snapshot()
-    self.assertEqual(diagnostics["preflight_requests"], 1)
+    self.assertEqual(diagnostics["preflight_requests"], 2)
     self.assertEqual(diagnostics["preflight_responses"], 1)
     self.assertEqual(diagnostics["publications_sent"], 0)
 
@@ -302,6 +331,43 @@ class TestToyotaTss3RequestTransport(unittest.TestCase):
   def test_camry_transport_profile_remains_the_default(self):
     self.assertEqual(build_oracle_transport(1, KNOWN_APPLICATION),
                      build_oracle_transport(1, KNOWN_APPLICATION, CAMRY_ORACLE_PROFILE))
+
+  def test_camry_live_preflight_remains_one_hz(self):
+    transport = ToyotaTss3RequestTransport(self.packer)
+    transport.observe([], True)
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_000_000_000,
+    )
+    sequence = request_sequence_from_sends(sends)
+    transport.observe(response(1_008_000_000, sequence), True)
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_010_000_000,
+    )
+    self.assertEqual(sends, [])
+
+    sends = transport.update_control(
+      enabled=False,
+      lat_active=False,
+      target_angle_deg=0.0,
+      long_active=False,
+      accel=0.0,
+      set_speed_kph=0.0,
+      now_nanos=1_008_000_000 + ORACLE_PREFLIGHT_INTERVAL_NS,
+    )
+    self.assertEqual(request_sequence_from_sends(sends), 2)
 
   def test_host_application_uses_dbc_packer(self):
     application = build_host_application(

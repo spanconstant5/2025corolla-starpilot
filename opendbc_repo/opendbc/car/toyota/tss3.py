@@ -34,6 +34,7 @@ ORACLE_MAX_PENDING_GENERATIONS = 8
 ORACLE_PUBLICATION_DEADLINE_NS = 90_000_000
 ORACLE_PREFLIGHT_INTERVAL_NS = 1_000_000_000
 ORACLE_STARTUP_PREFLIGHT_RETRY_NS = 100_000_000
+ORACLE_COROLLA_LIVE_PREFLIGHT_INTERVAL_NS = 10_000_000
 
 ORACLE_CARRIER_C8_SIX_FRAME = "c8-six-frame"
 ORACLE_CARRIER_FUNCTIONAL_NIBBLE4 = "functional-nibble4"
@@ -46,6 +47,7 @@ class ToyotaTss3OracleProfile:
   admin_bus: int
   carrier: str
   sequence_max: int
+  live_preflight_interval_ns: int
 
 
 CAMRY_ORACLE_PROFILE = ToyotaTss3OracleProfile(
@@ -54,6 +56,7 @@ CAMRY_ORACLE_PROFILE = ToyotaTss3OracleProfile(
   admin_bus=1,
   carrier=ORACLE_CARRIER_C8_SIX_FRAME,
   sequence_max=0x1F,
+  live_preflight_interval_ns=ORACLE_PREFLIGHT_INTERVAL_NS,
 )
 
 # Live Corolla 8965F1208000 evidence: four classic frames on Panda bus 0,
@@ -65,6 +68,11 @@ COROLLA_ORACLE_PROFILE = ToyotaTss3OracleProfile(
   admin_bus=0,
   carrier=ORACLE_CARRIER_FUNCTIONAL_NIBBLE4,
   sequence_max=0xFF,
+  # The Corolla resident's only sustained live proof is its 100 Hz benchmark.
+  # After the first successful challenge, keep exactly one inactive request in
+  # flight and replace it only after its response. CarController bounds this at
+  # 100 Hz; missing responses still use the slower retry interval below.
+  live_preflight_interval_ns=ORACLE_COROLLA_LIVE_PREFLIGHT_INTERVAL_NS,
 )
 
 
@@ -447,8 +455,15 @@ class ToyotaTss3RequestTransport:
       self.preflight_timeouts += 1
       carlog.warning("Toyota TSS3 request plane preflight signer timeout")
 
-    reference_ns = max(self.last_signer_response_ns, self.last_preflight_request_ns)
-    interval_ns = ORACLE_PREFLIGHT_INTERVAL_NS if self.signer_live else self.preflight_retry_interval_ns
+    if self.signer_live:
+      # A valid response is required to clear preflight_request above. Pace the
+      # next challenge from the prior request so a slow response can be refilled
+      # immediately without exceeding the profile's maximum request cadence.
+      reference_ns = self.last_preflight_request_ns
+      interval_ns = self.oracle_profile.live_preflight_interval_ns
+    else:
+      reference_ns = max(self.last_signer_response_ns, self.last_preflight_request_ns)
+      interval_ns = self.preflight_retry_interval_ns
     if reference_ns and now_ns - reference_ns < interval_ns:
       return
 

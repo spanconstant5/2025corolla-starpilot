@@ -9,10 +9,10 @@ authority for the 2025 control messages.
 
 | Area | State | Evidence / next gate |
 |---|---|---|
-| RAM signer install | Proven | Two clean final-commit attempts matched exact F181 and payload SHA; first-attempt Classical-CAN `0x777` to `0x7A9` probes passed in 12.81 ms and 11.04 ms. |
-| Bench peer health | Inconclusive | Both attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
-| Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. Panda acceptance and sustained publication must be confirmed from an in-car route. |
-| Runtime signer preflight | Packet-local CAN framing deployed; route validation pending | The final-commit UI archive proves the startup bridge and standalone Classical-CAN probe twice. It contains no qlog/rlog, so it cannot yet prove native `pandad` runtime `0x777`, `0x7A9`, or host `0x08A`. |
+| RAM signer install | Proven | Four clean October 29 attempts at exact commit `02c3d23135` matched F181 and payload SHA; every first-attempt Classical-CAN `0x777` to `0x7A9` probe passed in 9.59--11.74 ms. |
+| Bench peer health | Inconclusive | All four attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
+| Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. The October 29 route proves native runtime signing but contains no engagement, so it cannot prove host `0x08A` publication. |
+| Runtime signer preflight | Native framing proven; sustained keepalive pending | Runtime produced status-zero `0x7A9` for accepted Classical-CAN `0x777`, proving the rebuilt native transport. Responses stopped 7.732 s after install under the inherited 1 Hz preflight. Corolla now keeps one inactive challenge response-paced at up to 100 Hz, matching the only sustained benchmark; repeat stationary validation on the new commit. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -240,6 +240,30 @@ disassembly confirms startup disables auto-FD on all three buses, Toyota safety
 keeps it disabled when the TSS3 signer bit is set, and packet packing sets FD
 only for payloads longer than eight bytes. A prebuilt-policy test now rejects a
 clean checkout whose tracked pandad predates its transport sources.
+
+The October 29 guided archive and route finally exercise that rebuilt native
+binary at clean commit `02c3d231351658220063a8edd81737e78fe110d4`.
+Fingerprinting selected exact, non-fuzzy `TOYOTA_COROLLA_TSS3`; Panda entered
+Toyota safety param 53321 with no faults or invalid RX checks. The post-install
+stationary route remained in Park at zero speed and recorded no `canError`,
+`canBusMissing`, or `controlsMismatch`. Panda accepted all 248 Classical-CAN
+`0x777` fragments, forming 62 aligned applications, with zero rejects and zero
+in both longitudinal fields. Eight status-zero responses appeared on bus 0 and
+were mirrored on bus 2. This proves the source and deployed binary framing fix.
+
+It also exposes the next boundary. The first bus-0 response arrived 0.641 s
+after the install completed and the last arrived at 7.732 s; sequence 7 and all
+later one-second challenges were accepted by Panda but received no response.
+The route never left Park, cruise main remained unavailable, `CarControl` was
+never enabled, and Panda `controlsAllowed` remained false. Consequently no host
+`0x08A` was expected or published; this route cannot validate handoff. The
+Corolla resident's retained 100 Hz benchmark is the only sustained-liveness
+proof, while the inherited one-second Camry probe cadence has now failed on the
+vehicle. Corolla preflight therefore keeps exactly one inactive request in
+flight and replaces it immediately after a valid response, bounded by the
+100 Hz controller. A missing response still times out and falls back to bounded
+retry. This changes neither ownership nor actuation: preflight emits no admin
+arm or host `0x08A`, and both longitudinal fields remain zero.
 
 The installer summaries on the earlier runs marked clean builds dirty because
 persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`
