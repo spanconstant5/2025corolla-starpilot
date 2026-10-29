@@ -254,6 +254,12 @@ were mirrored on bus 2. This proves the source and deployed binary framing fix.
 It also exposes the next boundary. The first bus-0 response arrived 0.641 s
 after the install completed and the last arrived at 7.732 s; sequence 7 and all
 later one-second challenges were accepted by Panda but received no response.
+In route time, that final response was at 7.124 s, Panda changed from ELM327 to
+Toyota safety param 53321 at 7.354 s, and sequence 7 was not sent until 8.131 s.
+The correlation does not establish whether the resident expired independently
+or the safety transition exposed a remaining transport difference. The
+response-paced preflight removes that one-second observation gap on the next
+run.
 The route never left Park, cruise main remained unavailable, `CarControl` was
 never enabled, and Panda `controlsAllowed` remained false. Consequently no host
 `0x08A` was expected or published; this route cannot validate handoff. The
@@ -286,7 +292,10 @@ longitudinal fields for zero. It also requires each application's six-bit
 first runtime preflight therefore reproduces the installer's proven sequence-1
 request byte for byte. Forwarded stock `0x08A` also produces TX receipts and is
 never counted as host acceptance without a matching `sendcan` frame. The report
-also lists which bytes changed in native candidate frames.
+also lists which bytes changed in native candidate frames. Schema v3 adds exact
+first/last traffic offsets, deployed commit identity, fingerprint provenance,
+CarParams safety configuration, gear and speed, engagement state, on-road
+events, Panda safety transitions, faults, and invalid RX-check counts.
 
 ## In-car gate order
 

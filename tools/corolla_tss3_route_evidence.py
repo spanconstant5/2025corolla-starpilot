@@ -23,19 +23,24 @@ class FrameEvidence:
   byte_values: list[set[int]] = field(default_factory=list)
   first_hex: str | None = None
   last_hex: str | None = None
+  first_ns: int | None = None
+  last_ns: int | None = None
 
-  def observe(self, bus: int, data: bytes) -> None:
+  def observe(self, bus: int, data: bytes, timestamp_ns: int | None = None) -> None:
     self.count += 1
     self.buses[bus] += 1
     self.lengths[len(data)] += 1
     self.first_hex = self.first_hex or data.hex()
     self.last_hex = data.hex()
+    if timestamp_ns is not None:
+      self.first_ns = timestamp_ns if self.first_ns is None else min(self.first_ns, timestamp_ns)
+      self.last_ns = timestamp_ns if self.last_ns is None else max(self.last_ns, timestamp_ns)
     while len(self.byte_values) < len(data):
       self.byte_values.append(set())
     for index, value in enumerate(data):
       self.byte_values[index].add(value)
 
-  def as_dict(self) -> dict[str, Any]:
+  def as_dict(self, start_ns: int | None = None) -> dict[str, Any]:
     changing = {
       str(index): [f"0x{value:02x}" for value in sorted(values)]
       for index, values in enumerate(self.byte_values) if len(values) > 1
@@ -46,6 +51,8 @@ class FrameEvidence:
       "lengths": {str(length): count for length, count in sorted(self.lengths.items())},
       "first_hex": self.first_hex,
       "last_hex": self.last_hex,
+      "first_offset_s": None if start_ns is None or self.first_ns is None else round((self.first_ns - start_ns) / 1e9, 6),
+      "last_offset_s": None if start_ns is None or self.last_ns is None else round((self.last_ns - start_ns) / 1e9, 6),
       "changing_byte_values": changing,
     }
 
@@ -84,6 +91,28 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
   host_publication_rejected = 0
   signer_application_fragments: list[bytes] = []
   transport_events: list[str] = []
+  deployment: dict[str, Any] = {}
+  car_params: dict[str, Any] = {}
+  car_state_count = 0
+  car_state_can_valid_count = 0
+  car_state_can_timeout_count = 0
+  car_state_block_pcm_enable_count = 0
+  car_state_steer_fault_temporary_count = 0
+  car_state_steer_fault_permanent_count = 0
+  max_abs_speed_mps = 0.0
+  gears: Counter[str] = Counter()
+  car_control_count = 0
+  car_control_enabled_count = 0
+  car_control_lat_active_count = 0
+  car_control_long_active_count = 0
+  car_control_nonzero_accel_count = 0
+  selfdrive_state_count = 0
+  selfdrive_engageable_count = 0
+  onroad_events: Counter[str] = Counter()
+  panda_safety_modes: Counter[str] = Counter()
+  panda_controls_allowed_count = 0
+  panda_rx_checks_invalid_count = 0
+  panda_faults: Counter[str] = Counter()
   start_ns: int | None = None
   end_ns: int | None = None
 
@@ -92,6 +121,63 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
     start_ns = timestamp if start_ns is None else min(start_ns, timestamp)
     end_ns = timestamp if end_ns is None else max(end_ns, timestamp)
     which = event.which()
+
+    if which == "initData":
+      value = event.initData
+      deployment = {
+        "git_commit": str(value.gitCommit),
+        "git_branch": str(value.gitBranch),
+        "git_remote": str(value.gitRemote),
+        "dirty": bool(value.dirty),
+      }
+      continue
+    if which == "carParams":
+      value = event.carParams
+      car_params = {
+        "fingerprint": str(value.carFingerprint),
+        "fingerprint_source": str(value.fingerprintSource),
+        "fuzzy_fingerprint": bool(value.fuzzyFingerprint),
+        "openpilot_longitudinal_control": bool(value.openpilotLongitudinalControl),
+        "safety_configs": [
+          {"model": str(config.safetyModel), "param": int(config.safetyParam)} for config in value.safetyConfigs
+        ],
+      }
+      continue
+    if which == "carState":
+      value = event.carState
+      car_state_count += 1
+      car_state_can_valid_count += int(value.canValid)
+      car_state_can_timeout_count += int(value.canTimeout)
+      car_state_block_pcm_enable_count += int(value.blockPcmEnable)
+      car_state_steer_fault_temporary_count += int(value.steerFaultTemporary)
+      car_state_steer_fault_permanent_count += int(value.steerFaultPermanent)
+      max_abs_speed_mps = max(max_abs_speed_mps, abs(float(value.vEgo)))
+      gears[str(value.gearShifter)] += 1
+      continue
+    if which == "carControl":
+      value = event.carControl
+      car_control_count += 1
+      car_control_enabled_count += int(value.enabled)
+      car_control_lat_active_count += int(value.latActive)
+      car_control_long_active_count += int(value.longActive)
+      car_control_nonzero_accel_count += int(abs(float(value.actuators.accel)) > 1e-6)
+      continue
+    if which == "selfdriveState":
+      selfdrive_state_count += 1
+      selfdrive_engageable_count += int(event.selfdriveState.engageable)
+      continue
+    if which == "onroadEvents":
+      for onroad_event in event.onroadEvents:
+        onroad_events[str(onroad_event.name)] += 1
+      continue
+    if which == "pandaStates":
+      for state in event.pandaStates:
+        panda_safety_modes[f"{state.safetyModel}:{int(state.safetyParam)}"] += 1
+        panda_controls_allowed_count += int(state.controlsAllowed)
+        panda_rx_checks_invalid_count += int(state.safetyRxChecksInvalid)
+        for fault in state.faults:
+          panda_faults[str(fault)] += 1
+      continue
 
     if which in ("logMessage", "errorLogMessage"):
       message = _transport_log_message(str(getattr(event, which)))
@@ -109,7 +195,7 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
           if not _is_corolla_signer_fragment(data):
             signer_application_fragments = []
             continue
-          signer_requests.observe(bus, data)
+          signer_requests.observe(bus, data, timestamp)
           fragment = data[0] >> 4
           expected_fragment = 8 + len(signer_application_fragments)
           if fragment == 8:
@@ -132,7 +218,7 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
                 signer_application_sequence_mismatch += 1
             signer_application_fragments = []
         elif address == 0x08A:
-          host_08a.observe(bus, data)
+          host_08a.observe(bus, data, timestamp)
           host_payloads[data] += 1
           if len(data) >= 13 and (data[8:10] != b"\0\0" or data[11:13] != b"\0\0"):
             host_longitudinal_nonzero += 1
@@ -140,52 +226,78 @@ def analyze_events(events: Iterable[Any]) -> dict[str, Any]:
 
       if bus < 0x80:
         if address == 0x08A:
-          native_08a.observe(bus, data)
+          native_08a.observe(bus, data, timestamp)
         elif address == 0x160:
-          native_160.observe(bus, data)
+          native_160.observe(bus, data, timestamp)
         elif address == 0x7A9:
-          signer_responses.observe(bus, data)
+          signer_responses.observe(bus, data, timestamp)
       else:
         if address == 0x777 and _is_corolla_signer_fragment(data):
-          signer_request_tx_receipts.observe(bus, data)
+          signer_request_tx_receipts.observe(bus, data, timestamp)
           signer_request_tx_accepted += int(bus == 0x80)
           signer_request_tx_rejected += int(bus == 0xC0)
         elif address == 0x08A:
-          bus_0_tx_receipts_08a.observe(bus, data)
+          bus_0_tx_receipts_08a.observe(bus, data, timestamp)
           # Forwarded native 0x08A traffic also creates bus-0 TX receipts. Only
           # call a receipt a host acceptance when its complete payload matches a
           # frame observed on sendcan during this route.
           if host_payloads[data] > 0 and bus in (0x80, 0xC0):
             if bus == 0x80:
-              matched_host_08a_echo.observe(bus, data)
+              matched_host_08a_echo.observe(bus, data, timestamp)
             else:
               host_publication_rejected += 1
             host_payloads[data] -= 1
 
   duration_s = 0.0 if start_ns is None or end_ns is None else round((end_ns - start_ns) / 1e9, 3)
   return {
-    "schema": "corolla-tss3-route-evidence-v2",
+    "schema": "corolla-tss3-route-evidence-v3",
     "duration_s": duration_s,
+    "deployment": deployment,
+    "vehicle": {
+      "car_params": car_params,
+      "car_state_count": car_state_count,
+      "can_valid_count": car_state_can_valid_count,
+      "can_timeout_count": car_state_can_timeout_count,
+      "block_pcm_enable_count": car_state_block_pcm_enable_count,
+      "steer_fault_temporary_count": car_state_steer_fault_temporary_count,
+      "steer_fault_permanent_count": car_state_steer_fault_permanent_count,
+      "max_abs_speed_mps": round(max_abs_speed_mps, 6),
+      "gears": dict(sorted(gears.items())),
+      "onroad_events": dict(sorted(onroad_events.items())),
+    },
+    "control": {
+      "car_control_count": car_control_count,
+      "enabled_count": car_control_enabled_count,
+      "lat_active_count": car_control_lat_active_count,
+      "long_active_count": car_control_long_active_count,
+      "nonzero_actuator_accel_count": car_control_nonzero_accel_count,
+      "selfdrive_state_count": selfdrive_state_count,
+      "selfdrive_engageable_count": selfdrive_engageable_count,
+      "panda_safety_modes": dict(sorted(panda_safety_modes.items())),
+      "panda_controls_allowed_count": panda_controls_allowed_count,
+      "panda_rx_checks_invalid_count": panda_rx_checks_invalid_count,
+      "panda_faults": dict(sorted(panda_faults.items())),
+    },
     "signer": {
-      "requests_0x777": signer_requests.as_dict(),
-      "request_tx_receipts_0x777": signer_request_tx_receipts.as_dict(),
+      "requests_0x777": signer_requests.as_dict(start_ns),
+      "request_tx_receipts_0x777": signer_request_tx_receipts.as_dict(start_ns),
       "request_tx_accepted_count": signer_request_tx_accepted,
       "request_tx_rejected_count": signer_request_tx_rejected,
       "complete_request_applications": signer_applications,
       "request_application_longitudinal_nonzero_count": signer_application_longitudinal_nonzero,
       "request_application_sequence_mismatch_count": signer_application_sequence_mismatch,
-      "responses_0x7a9": signer_responses.as_dict(),
-      "host_publications_0x08a": host_08a.as_dict(),
-      "bus_0_tx_receipts_0x08a": bus_0_tx_receipts_08a.as_dict(),
-      "matched_host_publication_echoes_0x08a": matched_host_08a_echo.as_dict(),
+      "responses_0x7a9": signer_responses.as_dict(start_ns),
+      "host_publications_0x08a": host_08a.as_dict(start_ns),
+      "bus_0_tx_receipts_0x08a": bus_0_tx_receipts_08a.as_dict(start_ns),
+      "matched_host_publication_echoes_0x08a": matched_host_08a_echo.as_dict(start_ns),
       "host_publication_accepted_count": matched_host_08a_echo.count,
       "host_publication_rejected_count": host_publication_rejected,
       "host_longitudinal_nonzero_count": host_longitudinal_nonzero,
       "transport_log_events": transport_events,
     },
     "native_candidates": {
-      "0x08a": native_08a.as_dict(),
-      "0x160": native_160.as_dict(),
+      "0x08a": native_08a.as_dict(start_ns),
+      "0x160": native_160.as_dict(start_ns),
     },
   }
 

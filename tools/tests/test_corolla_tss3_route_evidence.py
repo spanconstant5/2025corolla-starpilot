@@ -38,7 +38,7 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
 
   result = analyze_events(events)
   assert result["duration_s"] == 0.003
-  assert result["schema"] == "corolla-tss3-route-evidence-v2"
+  assert result["schema"] == "corolla-tss3-route-evidence-v3"
   assert result["signer"]["requests_0x777"]["count"] == 4
   assert result["signer"]["request_tx_receipts_0x777"]["count"] == 1
   assert result["signer"]["request_tx_accepted_count"] == 1
@@ -47,6 +47,8 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["signer"]["request_application_longitudinal_nonzero_count"] == 0
   assert result["signer"]["request_application_sequence_mismatch_count"] == 0
   assert result["signer"]["responses_0x7a9"]["count"] == 1
+  assert result["signer"]["responses_0x7a9"]["first_offset_s"] == 0.002
+  assert result["signer"]["responses_0x7a9"]["last_offset_s"] == 0.002
   assert result["signer"]["host_publications_0x08a"]["count"] == 1
   assert result["signer"]["bus_0_tx_receipts_0x08a"]["count"] == 1
   assert result["signer"]["matched_host_publication_echoes_0x08a"]["count"] == 1
@@ -58,6 +60,9 @@ def test_route_evidence_separates_native_signer_and_host_traffic():
   assert result["signer"]["transport_log_events"] == [
     "Toyota TSS3 request plane host_08a_active: {}",
   ]
+  assert result["deployment"] == {}
+  assert result["vehicle"]["car_state_count"] == 0
+  assert result["control"]["long_active_count"] == 0
 
 
 def test_route_evidence_detects_carrier_application_sequence_mismatch():
@@ -72,3 +77,49 @@ def test_route_evidence_detects_carrier_application_sequence_mismatch():
 
   assert result["signer"]["complete_request_applications"] == 1
   assert result["signer"]["request_application_sequence_mismatch_count"] == 1
+
+
+def test_route_evidence_records_deployment_vehicle_and_safety_gates():
+  events = [
+    Event(kind="initData", logMonoTime=1_000_000_000, initData=SimpleNamespace(
+      gitCommit="abc123", gitBranch="star2025", gitRemote="https://example.test/openpilot.git", dirty=False,
+    )),
+    Event(kind="carParams", logMonoTime=1_001_000_000, carParams=SimpleNamespace(
+      carFingerprint="TOYOTA_COROLLA_TSS3", fingerprintSource="can", fuzzyFingerprint=False,
+      openpilotLongitudinalControl=False,
+      safetyConfigs=[SimpleNamespace(safetyModel="toyota", safetyParam=53321)],
+    )),
+    Event(kind="carState", logMonoTime=1_002_000_000, carState=SimpleNamespace(
+      canValid=True, canTimeout=False, blockPcmEnable=True, steerFaultTemporary=True,
+      steerFaultPermanent=False, vEgo=0.0, gearShifter="park",
+    )),
+    Event(kind="carControl", logMonoTime=1_003_000_000, carControl=SimpleNamespace(
+      enabled=False, latActive=False, longActive=False, actuators=SimpleNamespace(accel=0.0),
+    )),
+    Event(kind="selfdriveState", logMonoTime=1_004_000_000,
+          selfdriveState=SimpleNamespace(engageable=False)),
+    Event(kind="onroadEvents", logMonoTime=1_005_000_000,
+          onroadEvents=[SimpleNamespace(name="wrongGear")]),
+    Event(kind="pandaStates", logMonoTime=1_006_000_000, pandaStates=[SimpleNamespace(
+      safetyModel="toyota", safetyParam=53321, controlsAllowed=False,
+      safetyRxChecksInvalid=False, faults=[],
+    )]),
+  ]
+
+  result = analyze_events(events)
+
+  assert result["deployment"] == {
+    "git_commit": "abc123",
+    "git_branch": "star2025",
+    "git_remote": "https://example.test/openpilot.git",
+    "dirty": False,
+  }
+  assert result["vehicle"]["car_params"]["fingerprint"] == "TOYOTA_COROLLA_TSS3"
+  assert result["vehicle"]["car_params"]["openpilot_longitudinal_control"] is False
+  assert result["vehicle"]["gears"] == {"park": 1}
+  assert result["vehicle"]["onroad_events"] == {"wrongGear": 1}
+  assert result["control"]["long_active_count"] == 0
+  assert result["control"]["nonzero_actuator_accel_count"] == 0
+  assert result["control"]["panda_safety_modes"] == {"toyota:53321": 1}
+  assert result["control"]["panda_controls_allowed_count"] == 0
+  assert result["control"]["panda_rx_checks_invalid_count"] == 0
