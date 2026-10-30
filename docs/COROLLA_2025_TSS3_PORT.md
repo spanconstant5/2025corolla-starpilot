@@ -7,8 +7,10 @@ This branch integrates the RAM-resident request signer for the
 ## Live evidence
 
 - Exact EPS F181: `8965F1208000 / 8A3111213000`.
-- Resident payload SHA-256:
+- Revoked resident payload SHA-256:
   `72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122`.
+  It signs correctly but loses residency 8.091 seconds after installation on
+  this Corolla. StarPilot refuses to install it pending a reviewed relocation.
 - Installer verdict: `request_signer_live_probe_pass`.
 - Request carrier: four classic eight-byte `0x777` frames on Panda bus 0.
 - Response: classic eight-byte `0x7A9` on Panda bus 0, status zero, containing
@@ -77,7 +79,10 @@ malformed or stale lease is removed, while an unrequested native-child exit
 continues through StarPilot's existing recovery path. The rest of openpilot
 and its manager remain running throughout the handoff.
 
-The EPS resident is volatile. When `CarModel` already selects this exact Corolla,
+The EPS resident is volatile. A replacement payload must first relocate its
+resident away from Corolla application RAM at `0xFEBFF9F0`; the previously
+tested payload at that address is revoked. Once a relocated kit is reviewed and
+its hashes are pinned, when `CarModel` already selects this exact Corolla,
 `card` starts the
 installer-proven inactive `0x777` challenge as soon as live CAN also shows the
 mirrored 32-byte native `0x08A` plane on buses 0 and 2. One transport maintains
@@ -138,8 +143,8 @@ The ordered evidence gates and post-route analysis command are maintained in
   under controlled driving conditions.
 - Repeat the stationary sustained-rate benchmark long enough to cross both the
   ELM327-to-Toyota safety transition and the earlier eight-second signer
-  boundary. The latest four rejected request fragments occurred only after the
-  device changed offroad and do not establish RX-buffer overflow.
+  boundary after installing a relocated resident. The current payload is
+  revoked because it stops responding at that boundary.
 - Dynamically validate the 2025 steering calibration and driver-override
   threshold rather than relying indefinitely on inherited E210 geometry.
 - Complete an unambiguous fingerprint and standard firmware-query mapping.

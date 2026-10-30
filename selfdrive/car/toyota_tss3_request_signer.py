@@ -18,6 +18,14 @@ EXPECTED_TARGET = "corolla-8965F1208000"
 EXPECTED_APPLICATION_F181 = "023839363546313230383030300000000038413331313132313330303000000000"
 EXPECTED_HOST_SHA256 = "6914a964a0871de7c35fb1e35e3671f379a2b83f5e16deabbc810ea401871fee"
 EXPECTED_PAYLOAD_SHA256 = "72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122"
+# October 30 vehicle evidence proved this resident stops responding 8.091 s
+# after installation even under continuous response-paced challenges. Its
+# 0xFEBFF9F0 placement is inside Corolla application RAM and is not a usable
+# control authority. Keep the hash explicit so an unchanged external kit fails
+# closed until a relocated payload is reviewed and pinned above.
+REVOKED_PAYLOAD_SHA256S = frozenset({
+  "72ffc3eebbec7966177c700a12e3d132f4a5bd03682e61f266bfea62815f8122",
+})
 PASS_VERDICT = "request_signer_live_probe_pass"
 COROLLA_TSS3_MODEL = "TOYOTA_COROLLA_TSS3"
 TSS3_SIGNER_STARTUP_BRIDGE_REQUEST_PATH = Path("/tmp/openpilot-tss3-card-bridge-request")
@@ -133,6 +141,12 @@ def request_signer_kit_compatibility(tool_path: Path | None = None) -> SignerKit
     return SignerKitCheck(False, "Signer response transport is not the proven Corolla bus-0 profile")
   if authenticated_payload.get("sha256") != EXPECTED_PAYLOAD_SHA256:
     return SignerKitCheck(False, "Signer metadata names an unexpected authenticated payload")
+  if authenticated_payload.get("sha256") in REVOKED_PAYLOAD_SHA256S:
+    return SignerKitCheck(
+      False,
+      "Signer payload revoked: Corolla resident placement expires after about 8 seconds; " +
+      "install a reviewed relocated payload before vehicle validation",
+    )
 
   try:
     host_sha256 = _sha256(host_path)

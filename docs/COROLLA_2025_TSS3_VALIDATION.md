@@ -9,10 +9,10 @@ authority for the 2025 control messages.
 
 | Area | State | Evidence / next gate |
 |---|---|---|
-| RAM signer install | Proven | Six clean October 29 attempts matched F181 and payload SHA. The latest two ran exact commit `9d9a220573`; both first-attempt Classical-CAN `0x777` to `0x7A9` probes passed in 9.92 and 12.59 ms. |
-| Bench peer health | Inconclusive | All six attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
+| RAM signer install | Transport proven; payload revoked | October 30 installation matched F181 and the pinned payload and passed its first Classical-CAN probe in 12.19 ms. The resident then stopped responding 8.091 s after install, so hash `72ffc3ee…` is now rejected pending relocation. |
+| Bench peer health | Inconclusive | All seven attempts had clear Brake `0x102D` fault bits and the same 8-byte `0x102F`; Kai's current Camry decoder requires 10 bytes. This is not a confirmed fault and is not a health pass. |
 | Signed inactive `0x08A` | Offline/probe proven | Exact 28-byte inactive application and valid trailer are proven. The October 29 route proves native runtime signing but contains no engagement, so it cannot prove host `0x08A` publication. |
-| Runtime signer preflight | Short sustained keepalive proven; safety handoff pending | Exact commit `9d9a220573` produced 142 status-zero bus-0 responses to 143 response-paced inactive challenges over a 2.95 s route. The route went offroad before Panda left ELM327 safety, so repeat stationary validation long enough to cross the Toyota-safety transition and prior eight-second boundary. |
+| Runtime signer preflight | Resident lifetime failed | Exact commit `9d9a220573` produced 382 valid bus-0 responses under continuous response-paced challenges. The last was 8.091 s after install; later Classical-CAN requests remained Panda-accepted with zero rejects through 60.737 route seconds but received no response. A relocated resident is required. |
 | Vehicle receive topology | Route-replay proven | The full-rate Corolla stream is on Panda bus 2. CarState and Panda safety consume it there; the incomplete forwarded bus-0 TX-record stream is not used as a receive source. |
 | Fingerprint recovery | Three-bus route proven | When FPv1 is ambiguous, recovery requires explicit Corolla identity authority (stored selection or prior exact EPS signer probe), at least 120 DLC-exact Corolla census matches on each mirrored vehicle plane (buses 0 and 2), no conflicting census DLC, and the complete retained CAN-FD ADAS census on bus 1. Topology alone cannot identify the car. |
 | Lateral control | Implemented, road validation pending | Angle command uses the signed `0x08A`; 55-degree wheel-angle bound and measured-angle inactive check are enforced. |
@@ -291,6 +291,26 @@ The offline evidence report now records `deviceState.started` transitions,
 Panda safety transitions, and separate accepted/rejected `0x777` receipt
 timelines. This prevents shutdown rejects from being mistaken for an onroad
 transport failure and makes the next safety-handoff boundary directly visible.
+
+The October 30 post-install route resolves that boundary. Route logging began
+0.604 s after the install completed. Response-paced preflight received 382
+status-zero responses on bus 0, mirrored on bus 2; the last response was at
+route offset 7.488 s, or 8.091 s after installation. Panda did not enter Toyota
+safety param 53321 until route offset 7.575 s, 87.5 ms later. All 1,744 request
+fragments were accepted, with zero rejects, and requests continued through
+route offset 60.737 s without another response. Continuous challenges therefore
+do not retain the resident, and neither CAN-FD promotion nor Toyota safety
+rejection explains the loss. The external payload places its resident at
+`0xFEBFF9F0`, inside Corolla application RAM; it must be relocated and rebuilt.
+StarPilot now rejects the proven-expiring payload hash until a replacement is
+reviewed and pinned.
+
+This was not a stationary route despite the validation gate: it reached
+12.868 m/s and selected Drive and Reverse. Openpilot remained disabled with no
+active lateral or longitudinal control, published no host `0x08A`, recorded no
+Panda faults or invalid RX checks, and kept both longitudinal fields and
+actuator acceleration zero. No moving-road authority is established by this
+capture.
 
 The installer summaries on the earlier runs marked clean builds dirty because
 persisted `GitDiff` included runtime-selected theme symlinks. Route `initData`

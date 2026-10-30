@@ -69,6 +69,18 @@ def test_compatibility_accepts_exact_corolla_kit(tmp_path, monkeypatch):
   assert signer.request_signer_kit_compatibility(tool).compatible
 
 
+def test_compatibility_rejects_revoked_corolla_payload(tmp_path, monkeypatch):
+  tool = _make_kit(tmp_path, monkeypatch)
+  payload_hash = signer.EXPECTED_PAYLOAD_SHA256
+  monkeypatch.setattr(signer, "REVOKED_PAYLOAD_SHA256S", frozenset({payload_hash}))
+
+  check = signer.request_signer_kit_compatibility(tool)
+
+  assert not check.compatible
+  assert "payload revoked" in check.detail
+  assert "relocated payload" in check.detail
+
+
 def test_compatibility_rejects_camry_target(tmp_path, monkeypatch):
   tool = _make_kit(tmp_path, monkeypatch)
   meta_path = tmp_path / "bundle" / "request_signer.json"
